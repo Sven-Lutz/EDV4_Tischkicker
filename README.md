@@ -86,20 +86,62 @@ EDV4_Tischkicker/
 ---
 
 ## Setup & Schnellstart
+
+### 1. SSH-Key einrichten (einmalig pro Laptop)
+
+SSH ist die Verbindung zwischen deinem Laptop und GitHub. Ohne SSH kannst du keine
+Änderungen hochladen. Prüfe zuerst ob du bereits einen Key hast:
 ```bash
-# 1. Repository klonen
-git clone https://github.com/Sven-Lutz/EDV4_Tischkicker.git
+ssh -T git@github.com
+```
+
+- `Hi <deinName>! You've successfully authenticated` → SSH funktioniert, weiter zu Schritt 2
+- Alles andere → SSH Key erstellen:
+```bash
+# Key erstellen
+ssh-keygen -t ed25519 -C "deine@email.com"
+# Dreimal Enter drücken
+
+# Key zum SSH-Agent hinzufügen
+eval "$(ssh-agent -s)"
+ssh-add --apple-use-keychain ~/.ssh/id_ed25519   # Mac
+ssh-add ~/.ssh/id_ed25519                         # Linux
+
+# Public Key kopieren
+pbcopy < ~/.ssh/id_ed25519.pub   # Mac
+cat ~/.ssh/id_ed25519.pub        # Linux – Ausgabe manuell kopieren
+```
+
+Dann auf GitHub: **Settings → SSH and GPG keys → New SSH key** → einfügen & speichern.
+
+Verbindung testen:
+```bash
+ssh -T git@github.com
+# Erwartet: "Hi <deinName>! You've successfully authenticated..."
+```
+
+---
+
+### 2. Repository klonen
+```bash
+git clone git@github.com:Sven-Lutz/EDV4_Tischkicker.git
 cd EDV4_Tischkicker
 ```
+
+---
+
+### 3. Einmalig: Setup ausführen
 ```bash
-# 2. Einmalig: Setup ausführen
-./setup.sh      # Mac / Linux
-setup.bat       # Windows
+./scripts/setup.sh      # Mac / Linux
+scripts\setup.bat       # Windows
 ```
+
+---
+
+### 4. Starten
 ```bash
-# 3. Starten
-./start.sh      # Mac / Linux
-start.bat       # Windows
+./scripts/start.sh      # Mac / Linux
+scripts\start.bat       # Windows
 ```
 
 ## Team & Branches
