@@ -1,0 +1,21 @@
+# Virtuelle Umgebung
+EDV4_TK/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.DS_Store
+
+# Videos & Testaufnahmen (lokal halten)
+*.mp4
+*.avi
+*.mov
