@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 import logging
+import os
+from datetime import datetime
 logging.basicConfig(level=logging.INFO)
 from camera.Camera import Camera
 from ball_tracker.BallTracker import BallTracker
@@ -24,6 +26,7 @@ class GameController:
             team_names: tuple[str, str] = ("Links", "Rechts"),
             cm_per_pixel: float = 0.1,
             goals_to_win: int = 10,
+            snapshot_dir: str = "../snapshots"
 
     ):
         """
@@ -31,9 +34,11 @@ class GameController:
         :param team_names:    Namen der beiden Teams
         :param cm_per_pixel:  Pixel→cm Umrechnungsfaktor
         :param goals_to_win:  Tore bis zum Spielende
+        :param snapshot_dir:  Verzeichnis für Tor-Snapshots
         """
         self.goals_to_win = goals_to_win
         self.state = self.STATE_IDLE
+        self.snapshot_dir = snapshot_dir
 
         # Komponenten
         self.camera = Camera(source=camera_source)
@@ -41,6 +46,9 @@ class GameController:
         self.field = Field()
         self.scoreboard = ScoreBoard(team_names=team_names)
         self.statistics = Statistics()
+        
+        # Snapshot-Verzeichnis erstellen
+        os.makedirs(self.snapshot_dir, exist_ok=True)
 
     def start(self) -> None:
         """Startet das System: Kamera öffnen → kalibrieren → Spiel-Loop."""
@@ -125,7 +133,7 @@ class GameController:
         scored_goals = self.field.check_goals(ball_pos)
         for goal_name in scored_goals:
             self.scoreboard.register_goal(goal_name, self.ball_tracker.speed_cm_s)
-            self._on_goal(goal_name)
+            self._on_goal(goal_name, frame)
 
         # 7. Spielende prüfen
         for team in self.scoreboard.team_names:
@@ -143,14 +151,33 @@ class GameController:
             p1 = (int(trajectory[i-1][0]), int(trajectory[i-1][1]))
             p2 = (int(trajectory[i][0]), int(trajectory[i][1]))
             cv2.line(frame, p1, p2, (255, 0, 0), 2)
+
+    def save_snapshot(self, frame: np.ndarray, team: str) -> None:
+        """
+        Speichert einen Snapshot des aktuellen Frames mit Trajektorie.
+        
+        :param frame: Der zu speichernde Frame (bereits mit Trajektorie gezeichnet)
+        :param team: Name des Teams, das getroffen hat
+        """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        score = self.scoreboard.get_score_string().replace(" : ", "-")
+        filename = f"goal_{team}_{score}_{timestamp}.png"
+        filepath = os.path.join(self.snapshot_dir, filename)
+        
+        cv2.imwrite(filepath, frame)
+        logging.info(f"[GameController] Snapshot gespeichert: {filepath}")
+    
     # ------------------------------------------------------------------
     # Event-Handler
     # ------------------------------------------------------------------
 
-    def _on_goal(self, team: str) -> None:
+    def _on_goal(self, team: str, frame: np.ndarray = None) -> None:
         """Wird aufgerufen wenn ein Tor fällt."""
         print(f"[game_controller] TOR für {team}! Neuer Stand: {self.scoreboard.get_score_string()}")
-        # Hier könnten Animationen, Sounds etc. ausgelöst werden
+        
+        # Snapshot mit Trajektorie speichern
+        if frame is not None:
+            self.save_snapshot(frame, team)
 
     def _on_game_over(self, winner: str) -> None:
         """Wird aufgerufen wenn ein Team gewonnen hat."""
@@ -180,7 +207,7 @@ class GameController:
     # ------------------------------------------------------------------
     # HUD (Head-Up-Display)
     # ------------------------------------------------------------------
-
+    #ggf in GUI reinpacken
     def _render_hud(self, frame: np.ndarray) -> None:
         """Rendert Spielstand, Geschwindigkeit und Status ins Bild."""
         h, w = frame.shape[:2]
