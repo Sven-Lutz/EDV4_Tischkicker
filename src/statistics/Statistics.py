@@ -1,0 +1,116 @@
+from dataclasses import dataclass, field
+from datetime import datetime
+
+
+@dataclass
+class GoalEvent:
+    """Speichert ein einzelnes Tor-Ereignis."""
+    team: str
+    timestamp: datetime = field(default_factory=datetime.now)
+    ball_speed_cm_s: float = 0.0
+
+
+class ScoreBoard:
+    """
+    Verwaltet den Spielstand und die Tor-Historie.
+    """
+
+    def __init__(self, team_names: tuple[str, str] = ("Links", "Rechts")):
+        """
+        :param team_names: Namen der beiden Teams / Seiten
+        """
+        self.team_names = team_names
+        self._scores: dict[str, int] = {name: 0 for name in team_names}
+        self._goal_events: list[GoalEvent] = []
+
+    def register_goal(self, team: str, ball_speed: float = 0.0) -> None:
+        """
+        Zählt ein Tor für das angegebene Team.
+
+        :param team:       Team-Name (muss in team_names vorkommen)
+        :param ball_speed: Geschwindigkeit des Balls beim Tor (cm/s)
+        """
+        if team not in self._scores:
+            print(f"[ScoreBoard] Unbekanntes Team: {team}")
+            return
+
+        self._scores[team] += 1
+        event = GoalEvent(team=team, ball_speed_cm_s=ball_speed)
+        self._goal_events.append(event)
+        print(f"[ScoreBoard] TOR für '{team}'! Stand: {self.get_score_string()} | {ball_speed:.1f} cm/s")
+
+    def get_score(self, team: str) -> int:
+        return self._scores.get(team, 0)
+
+    def get_score_string(self) -> str:
+        """Gibt den Spielstand als lesbaren String zurück, z.B. '3 : 2'."""
+        a, b = self.team_names
+        return f"{self._scores[a]} : {self._scores[b]}"
+
+    def reset(self) -> None:
+        """Setzt den Spielstand zurück."""
+        for name in self.team_names:
+            self._scores[name] = 0
+        self._goal_events.clear()
+        print("[ScoreBoard] Spielstand zurückgesetzt.")
+
+    @property
+    def goal_events(self) -> list[GoalEvent]:
+        return list(self._goal_events)
+
+
+
+
+
+class Statistics:
+    """
+    Sammelt und berechnet Spielstatistiken.
+    """
+
+    def __init__(self):
+        self._speed_samples: list[float] = []  # cm/s, alle Frames
+        self._max_speed: float = 0.0
+        self._frame_count: int = 0
+
+    def record_speed(self, speed_cm_s: float) -> None:
+        """Nimmt eine Geschwindigkeits-Messung auf."""
+        if speed_cm_s <= 0:
+            return
+        self._speed_samples.append(speed_cm_s)
+        if speed_cm_s > self._max_speed:
+            self._max_speed = speed_cm_s
+        self._frame_count += 1
+
+    def average_speed(self) -> float:
+        """Durchschnittsgeschwindigkeit über das gesamte Spiel."""
+        if not self._speed_samples:
+            return 0.0
+        return sum(self._speed_samples) / len(self._speed_samples)
+
+    def max_speed(self) -> float:
+        """Maximale gemessene Geschwindigkeit."""
+        return self._max_speed
+
+    def summary(self, scoreboard: ScoreBoard) -> str:
+        """Gibt eine formatierte Zusammenfassung zurück."""
+        lines = [
+            "=" * 40,
+            "         SPIEL-ZUSAMMENFASSUNG",
+            "=" * 40,
+            f"  Endstand:          {scoreboard.get_score_string()}",
+            f"  Tore gesamt:       {len(scoreboard.goal_events)}",
+            f"  Ø Geschwindigkeit: {self.average_speed():.1f} cm/s",
+            f"  Max Geschw.:       {self.max_speed():.1f} cm/s",
+            f"  Frames analysiert: {self._frame_count}",
+            "-" * 40,
+        ]
+        for i, event in enumerate(scoreboard.goal_events, 1):
+            lines.append(f"  Tor {i}: {event.team} | {event.ball_speed_cm_s:.1f} cm/s "
+                         f"| {event.timestamp.strftime('%H:%M:%S')}")
+        lines.append("=" * 40)
+        return "\n".join(lines)
+
+    def reset(self) -> None:
+        self._speed_samples.clear()
+        self._max_speed = 0.0
+        self._frame_count = 0
