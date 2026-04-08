@@ -1,13 +1,14 @@
 import cv2
 import numpy as np
 import logging
-import os
-from datetime import datetime
 logging.basicConfig(level=logging.INFO)
 from camera.Camera import Camera
 from ball_tracker.BallTracker import BallTracker
 from table.Field import Field
 from statistics.Statistics import Statistics, ScoreBoard
+from game_controller.EventHandler import EventHandler
+from game_controller.HUDRenderer import HUDRenderer
+from game_controller.SnapshotManager import SnapshotManager
 
 
 class GameController:
@@ -38,7 +39,6 @@ class GameController:
         """
         self.goals_to_win = goals_to_win
         self.state = self.STATE_IDLE
-        self.snapshot_dir = snapshot_dir
 
         # Komponenten
         self.camera = Camera(source=camera_source)
@@ -47,8 +47,10 @@ class GameController:
         self.scoreboard = ScoreBoard(team_names=team_names)
         self.statistics = Statistics()
         
-        # Snapshot-Verzeichnis erstellen
-        os.makedirs(self.snapshot_dir, exist_ok=True)
+        # Ausgelagerte Komponenten
+        self.snapshot_manager = SnapshotManager(snapshot_dir=snapshot_dir)
+        self.hud_renderer = HUDRenderer()
+        self.event_handler = EventHandler(game_controller=self)
 
     def start(self) -> None:
         """Startet das System: Kamera öffnen → kalibrieren → Spiel-Loop."""
@@ -105,10 +107,10 @@ class GameController:
             if self.state == self.STATE_RUNNING:
                 self._process_frame(frame)
 
-            self._render_hud(frame)
+            self.hud_renderer.render_hud(frame, self.scoreboard, self.statistics, self.ball_tracker, self.state)
             cv2.imshow(self.WINDOW_NAME, frame)
 
-            self._handle_keys(cv2.waitKey(1) & 0xFF)
+            self.event_handler.handle_key_press(cv2.waitKey(1) & 0xFF)
 
     def _process_frame(self, frame: np.ndarray) -> None:
         """Führt Tracking, Tor-Check und Statistik für einen einzelnen Frame durch."""
@@ -127,109 +129,20 @@ class GameController:
         self.field.draw(frame)
         
         # 5. Trajektorie zeichnen
-        self.draw_trajectory(frame)
+        trajectory = self.statistics.get_trajectory_count()
+        self.hud_renderer.draw_trajectory(frame, trajectory)
 
         # 6. Tor-Check
         scored_goals = self.field.check_goals(ball_pos)
         for goal_name in scored_goals:
             self.scoreboard.register_goal(goal_name, self.ball_tracker.speed_cm_s)
-            self._on_goal(goal_name, frame)
+            self.event_handler.on_goal(goal_name, frame)
 
         # 7. Spielende prüfen
         for team in self.scoreboard.team_names:
             if self.scoreboard.get_score(team) >= self.goals_to_win:
-                self._on_game_over(team)
+                self.event_handler.on_game_over(team)
                 return
-    def draw_trajectory(self, frame):
-        """Zeichnet die Trajektorie der letzten 5 Sekunden."""
-        trajectory = self.statistics.get_trajectory_count()
-        if len(trajectory) < 2:
-            return
-        
-        for i in range(1, len(trajectory)):
-            # Extrahiere nur x,y position
-            p1 = (int(trajectory[i-1][0]), int(trajectory[i-1][1]))
-            p2 = (int(trajectory[i][0]), int(trajectory[i][1]))
-            cv2.line(frame, p1, p2, (255, 0, 0), 2)
-
-    def save_snapshot(self, frame: np.ndarray, team: str) -> None:
-        """
-        Speichert einen Snapshot des aktuellen Frames mit Trajektorie.
-        
-        :param frame: Der zu speichernde Frame (bereits mit Trajektorie gezeichnet)
-        :param team: Name des Teams, das getroffen hat
-        """
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        score = self.scoreboard.get_score_string().replace(" : ", "-")
-        filename = f"goal_{team}_{score}_{timestamp}.png"
-        filepath = os.path.join(self.snapshot_dir, filename)
-        
-        cv2.imwrite(filepath, frame)
-        logging.info(f"[GameController] Snapshot gespeichert: {filepath}")
-    
-    # ------------------------------------------------------------------
-    # Event-Handler
-    # ------------------------------------------------------------------
-
-    def _on_goal(self, team: str, frame: np.ndarray = None) -> None:
-        """Wird aufgerufen wenn ein Tor fällt."""
-        print(f"[game_controller] TOR für {team}! Neuer Stand: {self.scoreboard.get_score_string()}")
-        
-        # Snapshot mit Trajektorie speichern
-        if frame is not None:
-            self.save_snapshot(frame, team)
-
-    def _on_game_over(self, winner: str) -> None:
-        """Wird aufgerufen wenn ein Team gewonnen hat."""
-        print(f"\n[game_controller] Spiel vorbei! Gewinner: {winner}")
-        print(self.statistics.summary(self.scoreboard))
-        self.state = self.STATE_FINISHED
-
-    def _handle_keys(self, key: int) -> None:
-        """Verarbeitet Tastatur-Eingaben."""
-        if key == ord('q'):
-            print("[game_controller] Beenden durch User.")
-            self.state = self.STATE_FINISHED
-
-        elif key == ord('p'):
-            if self.state == self.STATE_RUNNING:
-                self.state = self.STATE_PAUSED
-                print("[game_controller] Pausiert.")
-            elif self.state == self.STATE_PAUSED:
-                self.state = self.STATE_RUNNING
-                print("[game_controller] Fortgesetzt.")
-
-        elif key == ord('r'):
-            self.scoreboard.reset()
-            self.statistics.reset()
-            print("[game_controller] Spielstand und Statistiken zurückgesetzt.")
-
-    # ------------------------------------------------------------------
-    # HUD (Head-Up-Display)
-    # ------------------------------------------------------------------
-    #ggf in GUI reinpacken
-    def _render_hud(self, frame: np.ndarray) -> None:
-        """Rendert Spielstand, Geschwindigkeit und Status ins Bild."""
-        h, w = frame.shape[:2]
-
-        cv2.rectangle(frame, (0, 0), (w, 50), (0, 0, 0), -1)
-
-        score_text = f"  {self.scoreboard.get_score_string()}  "
-        cv2.putText(frame, score_text, (w // 2 - 60, 35),
-                    cv2.FONT_HERSHEY_DUPLEX, 1.0, (255, 255, 255), 2)
-
-        cv2.putText(frame, self.scoreboard.team_names[0], (10, 35),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 200, 255), 2)
-        cv2.putText(frame, self.scoreboard.team_names[1], (w - 100, 35),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 200, 255), 2)
-
-        avg_speed = self.statistics.average_speed()
-        cv2.putText(frame, f"Akt: {self.ball_tracker.speed_cm_s:.1f} cm/s  |  Ø {avg_speed:.1f} cm/s",
-                    (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-
-        if self.state == self.STATE_PAUSED:
-            cv2.putText(frame, "⏸ PAUSE", (w // 2 - 60, h // 2),
-                        cv2.FONT_HERSHEY_DUPLEX, 1.5, (0, 255, 255), 3)
 
     def _shutdown(self) -> None:
         """Gibt alle Ressourcen frei und zeigt die Zusammenfassung."""
