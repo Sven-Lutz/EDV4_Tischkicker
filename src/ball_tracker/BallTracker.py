@@ -60,8 +60,9 @@ class BallTracker:
         mask = cv2.inRange(hsv, self.hsv_lower, self.hsv_upper)
 
         # 2. Rauschen reduzieren
-        mask = cv2.erode(mask, None, iterations=2)
-        mask = cv2.dilate(mask, None, iterations=2)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)  # Lücken schließen
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)  # Rauschen entfernen
         # 3. Konturen finden
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -76,7 +77,7 @@ class BallTracker:
         ((cx, cy), radius) = cv2.minEnclosingCircle(largest)
 
         # Mindestgröße um Rauschen auszuschließen
-        if radius < 5:
+        if radius < 2:
             self.position = None
             return None
 
@@ -192,11 +193,10 @@ class BallTracker:
             
             # Maske mit aktuellen Werten erstellen
             mask = cv2.inRange(hsv, self.hsv_lower, self.hsv_upper)
-            
-            # Optional: Morphologische Operationen für bessere Darstellung
-            mask_cleaned = cv2.erode(mask, None, iterations=2)
-            mask_cleaned = cv2.dilate(mask_cleaned, None, iterations=2)
-            
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+
+            mask_cleaned = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+            mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_OPEN, kernel)
             # Ergebnis auf Original anwenden
             result = cv2.bitwise_and(frame, frame, mask=mask_cleaned)
             
