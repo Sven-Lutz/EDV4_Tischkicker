@@ -31,16 +31,48 @@ class BallTracker:
         self._prev_position: tuple[int, int] | None = None
         self._speed_history: list[float] = []
 
+        self.kalman = cv2.KalmanFilter(4, 2)
+
+        dt = 1.0 / self.fps
+
+        self.kalman.transitionMatrix = np.array([
+            [1, 0, dt, 0],
+            [0, 1, 0, dt],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ], np.float32)
+
+        self.kalman.measurementMatrix = np.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0]
+        ], np.float32)
+
+        self.kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.05
+        self.kalman.measurementNoiseCov = np.eye(2, dtype=np.float32) * 5.0
+        self.kalman.errorCovPost = np.eye(4, dtype=np.float32)
+
+        self._kalman_initialized = False
+
+
     # ------------------------------------------------------------------
     # Tracking
     # ------------------------------------------------------------------
 
     def update(self, frame: np.ndarray) -> tuple[int, int] | None:
-        """
-        Process frame, detects ball and updates position and velocity accordingly.
-        """
-        self._prev_position = self.position
 
+        # ------------------------------------
+        # 1. Kalman Prediction (IMMER)
+        # ------------------------------------
+        prediction = self.kalman.predict()
+        pred_x = int(prediction[0, 0])
+        pred_y = int(prediction[1, 0])
+
+        measurement_available = False
+        cx, cy = None, None
+
+        # ------------------------------------
+        # 2. HSV-Maske + Schwerpunkt (Messung)
+        # ------------------------------------
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv, self.hsv_lower, self.hsv_upper)
 
@@ -48,34 +80,58 @@ class BallTracker:
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
 
-        if not contours:
-            self.position = None
-            self.radius = 0
-            self.speed_cm_s = 0.0
-            return None
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            M = cv2.moments(largest)
 
-        largest = max(contours, key=cv2.contourArea)
-        M = cv2.moments(largest)
-        if M["m00"] == 0:
-            self.position = None
-            return None
+            if M["m00"] > 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                measurement_available = True
 
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-        area = cv2.contourArea(largest)
-        radius = (area / np.pi) ** 0.5
+                area = cv2.contourArea(largest)
+                self.radius = int((area / np.pi) ** 0.5)
 
-        if radius < 2:
-            self.position = None
-            return None
+        # ------------------------------------
+        # 3. Kalman initialisieren (1×)
+        # ------------------------------------
+        if not self._kalman_initialized and measurement_available:
+            self.kalman.statePost = np.array(
+                [[cx], [cy], [0], [0]], dtype=np.float32
+            )
+            self._kalman_initialized = True
 
-        self.position = (int(cx), int(cy))
-        self.radius = int(radius)
-        self._update_speed()
+        # ------------------------------------
+        # 4. Kalman Correction (NUR bei Messung)
+        # ------------------------------------
+        if measurement_available:
+            measurement = np.array(
+                [[np.float32(cx)], [np.float32(cy)]]
+            )
+            self.kalman.correct(measurement)
+
+        # ------------------------------------
+        # 5. Gefilterten Zustand benutzen
+        # ------------------------------------
+
+        state = self.kalman.statePost
+        kalman_pos = (int(state[0, 0]), int(state[1, 0]))
+
+        if measurement_available:
+            self.position = (cx, cy)
+        else:
+            self.position = kalman_pos
+
+        # Geschwindigkeit aus Kalman
+        vx = state[2, 0]
+        vy = state[3, 0]
+        pixel_speed = np.sqrt(vx * vx + vy * vy)
+        self.speed_cm_s = pixel_speed * self.cm_per_pixel
         return self.position
-
     def _update_speed(self) -> None:
         """Berechnet Geschwindigkeit aus Positionsdifferenz zwischen zwei Frames."""
         if self._prev_position is None or self.position is None:
@@ -216,7 +272,7 @@ class BallTracker:
         except cv2.error:
             pass
 
-    def calibrate_hsv_interactive(self, camera, roi_radius: int = 15) -> None:
+    def calibrate_hsv_interactive(self, camera, roi_radius: int = 5) -> None:
         """
         Interactive calibration procedure.
         
