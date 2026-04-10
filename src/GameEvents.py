@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
+logger = logging.getLogger(__name__)
 
 class Team(Enum):
     """The two competing teams based on figure colors."""
@@ -110,3 +112,14 @@ class GameConfig:
     field_y1: int = 0
     field_x2: int = 640
     field_y2: int = 480
+
+    def __post_init__(self) -> None:
+        """Automatically called after the configuration is initialized."""
+        left_players = ", ".join(self.team_left_names)
+        right_players = ", ".join(self.team_right_names)
+
+        logger.info(
+            f"[GameConfig] System initialized successfully. "
+            f"Mode: {self.mode.value} | "
+            f"Matchup: [{left_players}] vs [{right_players}]"
+        )

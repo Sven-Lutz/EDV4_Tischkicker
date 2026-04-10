@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-import time
-
 from typing import Optional
+
 import numpy as np
 
 from src.game_controller.ScoreBoard import ScoreBoard
@@ -32,19 +33,19 @@ class Statistics:
     HEATMAP_GAUSSIAN_RADIUS = 15
     SHOT_SPEED_THRESHOLD_LOW = 1.0
     SHOT_SPEED_THRESHOLD_HIGH = 3.0
-    REBOUND_VX_THRESHOLD = 2.0
 
     def __init__(self, config: GameConfig) -> None:
         self._config = config
         self._lock = threading.Lock()
         self._reset_internal()
+        logger.info("[Statistics] Engine initialized.")
 
-    #--Public interface-------------------------------------------------------
+    # -- Public interface ----------------------------------------------------
 
     def update(
-            self, position: Optional[BallPosition], event: Optional[GameEvent]
-    )->None:
-        """Updates internal stats based on new frames and events."""
+        self, position: Optional[BallPosition], event: Optional[GameEvent]
+    ) -> None:
+        """Updates internal stats."""
         with self._lock:
             if event is not None:
                 self._events.append(event)
@@ -71,27 +72,30 @@ class Statistics:
         with self._lock:
             self._game_start_time = time.time()
             self._game_end_time = None
+            logger.info("[Statistics] Game timer started.")
 
     def stop_timer(self) -> None:
         """Stops the timer."""
         with self._lock:
             self._game_end_time = time.time()
+            duration = self._game_end_time - (self._game_start_time or self._game_end_time)
+            logger.info(f"[Statistics] Game timer stopped. Duration: {duration:.1f}s.")
 
-    def reset(self): -> None:
-    """Resets all collected statistics."""
+    def reset(self) -> None:
+        """Resets all collected statistics."""
         with self._lock:
             self._reset_internal()
+            logger.info("[Statistics] All tracking data reset for new session.")
 
-    #--Summary----------------------------------------------------------------
+    # -- Summary -------------------------------------------------------------
 
     def summary(self, scoreboard: ScoreBoard) -> str:
         """Returns a formatted summary."""
         with self._lock:
-            avg_speed = self._average_speed()
-            max_speed = self._max_speed()
-            frames = self._speed_frame_count()
-            rebound_cnt = self._rebound_count()
-            shot_cnt = self._shot_count()
+            avg_speed = self._average_speed_ms_unlocked()
+            max_speed = self._max_speed_ms
+            frames = self._speed_frame_count
+            shot_cnt = self._shot_count
 
             total_frames = sum(self._team_frame_counts.values())
             poss_red = poss_black = 0.0
@@ -100,6 +104,7 @@ class Statistics:
                 poss_black = self._team_frame_counts[Team.BLACK] / total_frames
 
         goals = scoreboard.goal_events
+        logger.info(f"[Statistics] Generating summary for {frames} analyzed frames.")
 
         lines = [
             "=" * 45,
@@ -110,11 +115,10 @@ class Statistics:
             f"  Avg. Speed:        {avg_speed:.2f} m/s",
             f"  Max Speed:         {max_speed:.2f} m/s",
             f"  Total Shots:       {shot_cnt}",
-            f"  Total Rebounds:    {rebound_cnt}",
             f"  Analyzed Frames:   {frames}",
             "-" * 45,
-            f" Possesion Red: {poss_red * 100:.1f} %",
-            f"  Possesion Black: {poss_black * 100:.1f} %",
+            f"  Possession Red:    {poss_red * 100:.1f} %",
+            f"  Possession Black:  {poss_black * 100:.1f} %",
             "-" * 45,
         ]
 
@@ -131,7 +135,7 @@ class Statistics:
         lines.append("=" * 45)
         return "\n".join(lines)
 
-    #--Core------------------------------------------------------------------
+    # -- Core properties -----------------------------------------------------
 
     @property
     def current_speed_ms(self) -> float:
@@ -155,9 +159,9 @@ class Statistics:
 
     @property
     def heatmap(self) -> np.ndarray:
-        """Normalised heatmap as float array"""
+        """Normalised heatmap as float array."""
         with self._lock:
-            return self._normalize(self._heatmap_raw.copy())
+            return self._normalise(self._heatmap_raw.copy())
 
     @property
     def trajectory(self) -> list[BallPosition]:
@@ -170,9 +174,9 @@ class Statistics:
         with self._lock:
             return dict(self._rod_goal_counts)
 
-    #--Helpers---------------------------------------------------------------
+    # -- Helpers -------------------------------------------------------------
 
-    def _reset_internal(self)-> None:
+    def _reset_internal(self) -> None:
         """Prepares all arrays and counters for a new session."""
         cfg = self._config
         h = max(1, cfg.field_y2 - cfg.field_y1)
@@ -183,10 +187,8 @@ class Statistics:
         self._max_speed_timestamp: float = 0.0
         self._total_speed_sum: float = 0.0
         self._speed_frame_count: int = 0
-        self._rebound_count: int = 0
         self._shot_count: int = 0
         self._prev_was_fast: bool = False
-        self._prev_vx: Optional[float] = None
         self._prev_position: Optional[BallPosition] = None
 
         self._zone_frame_counts: dict[Zone, int] = {z: 0 for z in Zone}
@@ -200,11 +202,9 @@ class Statistics:
         self._team_frame_counts: dict[Team, int] = {
             Team.RED: 0, Team.BLACK: 0
         }
-
         self._team_max_speed: dict[Team, float] = {
             Team.RED: 0.0, Team.BLACK: 0.0
         }
-
         self._team_shot_counts: dict[Team, int] = {
             Team.RED: 0, Team.BLACK: 0
         }
@@ -229,30 +229,25 @@ class Statistics:
         if self._game_start_time is not None:
             game_secs = time.time() - self._game_start_time
 
+        team = self._current_team(prev)
+
         if speed_ms > self._max_speed_ms:
             self._max_speed_ms = speed_ms
             self._max_speed_timestamp = game_secs
-
-        team = self._current_team(prev)
+            logger.info(
+                f"[Statistics] New Max Speed: {speed_ms:.2f} m/s "
+                f"by {team.value}!"
+            )
 
         is_fast = speed_ms >= self.SHOT_SPEED_THRESHOLD_HIGH
         if is_fast and not self._prev_was_fast:
             self._shot_count += 1
             self._team_shot_counts[team] += 1
+            logger.debug(f"[Statistics] Shot detected by {team.value} ({speed_ms:.1f} m/s)")
         self._prev_was_fast = is_fast
 
         if speed_ms > self._team_max_speed[team]:
             self._team_max_speed[team] = speed_ms
-
-        if self._prev_vx is not None:
-            if (
-                    abs(dx) > self.REBOUND_VX_THRESHOLD
-                    and abs(self._prev_vx) > self.REBOUND_VX_THRESHOLD
-                    and dx * self._prev_vx < 0
-            ):
-                self._rebound_count += 1
-        self._prev_vx = dx
-
 
     def _update_heatmap(self, position: BallPosition) -> None:
         cfg = self._config
@@ -268,7 +263,6 @@ class Statistics:
                     dist_sq = (gx - px) ** 2 + (gy - py) ** 2
                     val = np.exp(-dist_sq / (2 * (r / 2.5) ** 2))
                     self._heatmap_raw[gy, gx] += val
-
 
     def _update_zone(self, position: BallPosition) -> None:
         """Tracks the exact zone based on the 8 rod areas."""
@@ -291,9 +285,9 @@ class Statistics:
         team = self._current_team(position)
         self._team_frame_counts[team] += 1
 
-    def _current_team(self, postion: BallPosition) -> Team:
+    def _current_team(self, position: BallPosition) -> Team:
         """Determines possession based on which physical rod the ball is near."""
-        rod = self._x_to_rod(postion.x)
+        rod = self._x_to_rod(position.x)
 
         if rod in (
             Rod.LEFT_GOALIE,
@@ -313,8 +307,10 @@ class Statistics:
         pos_before = self._trajectory[-lookback]
         rod = self._x_to_rod(pos_before.x)
         self._rod_goal_counts[rod] += 1
+        logger.debug(f"[Statistics] Goal attributed to {rod.value}.")
 
-    def _x_to_rid(self, x: float) -> Rod:
+    def _x_to_rod(self, x: float) -> Rod:
+        """Maps the X coordinate to one of the 8 rod areas."""
         cfg = self._config
         width = cfg.field_x2 - cfg.field_x1
         if width <= 0:

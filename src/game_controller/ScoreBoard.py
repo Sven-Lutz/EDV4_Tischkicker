@@ -17,22 +17,27 @@ class ScoreBoard:
             left_team: Team = Team.RED,
             right_team: Team = Team.BLACK
     )->None:
-
+        """Initializes the ScoreBoard."""
         self.left_team = left_team
         self.right_team = right_team
 
         self._scores: dict[Team, int] = {
-            Team.RED: 0,
-            Team.BLACK: 0,
+            team: 0 for team in Team
         }
         self._goal_events: list[GameEvent] = []
         self._lock = threading.Lock()
+
+        logger.info(
+            f"[ScoreBoard] Initialized. "
+            f"Left: {self.left_team.value} | Right: {self.right_team.value}"
+        )
 
     def register_goal(
             self,
             team: Team,
             ball_speed_ms: float = 0.0
     )-> Optional[GameEvent]:
+        """Registers a goal."""
         with self._lock:
             if team not in self._scores:
                 logger.error(f"[ScoreBoard] Unknown team: {team}")
