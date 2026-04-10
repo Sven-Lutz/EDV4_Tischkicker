@@ -10,7 +10,7 @@ import numpy as np
 
 from camera.Camera import Camera
 from ball_tracker.BallTracker import BallTracker
-from table.Field import Field
+from table.Field import GoalDetector
 from statistics.Statistics import Statistics, ScoreBoard
 from game_controller.EventHandler import EventHandler
 from game_controller.HUDRenderer import HUDRenderer
@@ -61,7 +61,7 @@ class GameController:
         # Core
         self.camera = Camera(source=camera_source)
         self.ball_tracker = BallTracker(cm_per_pixel=cm_per_pixel)
-        self.field = Field()
+        self.field = GoalDetector()
         self.scoreboard = ScoreBoard(team_names=team_names)
         self.statistics = Statistics()
 
