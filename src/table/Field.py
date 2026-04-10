@@ -6,22 +6,24 @@ import numpy as np
 
 class GoalZone:
     """
-    Represents a goal area on the table.
+    Represents a goal opening on the table.
     """
 
     COOLDOWN_FRAMES = 30  #Cooldown zwischen Torzählungen
 
-    def __init__(self, name: str, x: int, y: int, w: int, h: int):
+    def __init__(self, name: str, x: int, y: int, w: int, h: int, side: str):
         """
         :param name: Goal name
         :param x, y: Top-left corner of the zone
         :param w, h: Width and height of the zone
+        :param side: Side of the table the goal belongs to ("left" or "right")
         """
         self.name = name
         self.x = x
         self.y = y
         self.w = w
         self.h = h
+        self.side = side
         self._cooldown_counter: int = 0
         self._ball_was_inside: bool = False
 
@@ -64,9 +66,13 @@ class GoalZone:
         return is_new_goal
 
     def draw(self, frame: np.ndarray, color: tuple = (0, 0, 255)) -> None:
-        """Draws the goal zone onto the frame."""
-        cv2.rectangle(frame, (self.x, self.y), (self.x + self.w, self.y + self.h), color, 2)
-        cv2.putText(frame, f"Tor {self.name}", (self.x, self.y - 6),
+        """Draws the goal opening as a centered line segment on the field border."""
+        border_x = self.x + self.w if self.side == "left" else self.x
+        cv2.line(frame, (border_x, self.y), (border_x, self.y + self.h), color, 4)
+
+        label_x = self.x if self.side == "left" else max(0, self.x - 60)
+        label_y = max(0, self.y - 6)
+        cv2.putText(frame, f"Tor {self.name}", (label_x, label_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
 
@@ -76,7 +82,7 @@ class Field:
     Manages calibration and all GoalZone objects.
     """
     GOAL_DEPTH_RATIO  = 0.04
-    GOAL_HEIGHT_RATIO = 0.30
+    GOAL_HEIGHT_RATIO = 0.27
 
     def __init__(self):
         self.goal_zones: list[GoalZone] = []
@@ -160,6 +166,7 @@ class Field:
             y=left_mid_y - goal_height // 2,
             w=goal_depth,
             h=goal_height,
+            side="left",
         )
 
         # GoalZone rechts: ragt nach rechts aus dem Spielfeld raus
@@ -169,6 +176,7 @@ class Field:
             y=right_mid_y - goal_height // 2,
             w=goal_depth,
             h=goal_height,
+            side="right",
         )
 
         self.goal_zones = [gz_left, gz_right]
@@ -184,7 +192,7 @@ class Field:
         pts = np.array(self.corners, dtype=np.int32)
         cv2.polylines(frame, [pts], isClosed=True, color=(0, 255, 255), thickness=6)
 
-        # Torzonen einzeichnen
+        # Torzonen als Teil der Seitenlinie einzeichnen
         for gz in self.goal_zones:
             gz.draw(frame)
 
