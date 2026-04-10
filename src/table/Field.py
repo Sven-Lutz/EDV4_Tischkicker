@@ -8,7 +8,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from src.game_events import BallPosition, EventType, GameEvent, Team
+from GameEvents import BallPosition, EventType, GameEvent, Team
 
 logger = logging.getLogger(__name__)
 
