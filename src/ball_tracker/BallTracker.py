@@ -216,7 +216,7 @@ class BallTracker:
         except cv2.error:
             pass
 
-    def calibrate_hsv_interactive(self, camera, roi_radius: int = 30) -> None:
+    def calibrate_hsv_interactive(self, camera, roi_radius: int = 15) -> None:
         """
         Interactive calibration procedure.
         
@@ -242,6 +242,7 @@ class BallTracker:
                 break
             
             # Aktuelle Trackbar-Werte übernehmen
+            frame = self.correct_lightning_clahe(frame)
             self.update_hsv_from_trackbar()
             
             # HSV konvertieren
@@ -281,3 +282,14 @@ class BallTracker:
         cv2.destroyWindow("Mask")
         cv2.destroyWindow("Result")
         cv2.destroyWindow("HSV Settings")
+
+
+    def correct_lightning_clahe(self, frame):
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_corrected = clahe.apply(l)
+
+        lab_corrected = cv2.merge((l_corrected, a, b))
+        return cv2.cvtColor(lab_corrected, cv2.COLOR_LAB2BGR)
