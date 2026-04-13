@@ -1,12 +1,7 @@
-"""Controller — orchestrates the game loop between VideoSource, detectors, Statistics, and GUI.
+"""Controller — orchestrates the game loop and auto-calibration on startup.
 
-Auto-calibration sequence (runs once before the game loop starts):
-  1. Open the camera.
-  2. Grab *CALIBRATION_FRAMES* frames and detect the green playing field.
-  3. If found:   update GameConfig bounds, set field mask on BallDetector,
-                 configure 2-D goal zones on GoalDetector.
-  4. If not found: log a warning and proceed with full-frame defaults so the
-                   game still runs without calibration.
+On start_game(), the camera is opened, CALIBRATION_FRAMES are sampled for
+field detection, and all detectors are configured before the loop starts.
 """
 
 from __future__ import annotations
@@ -17,8 +12,8 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from src.ball_detector import BallDetector
-from src.field_detector import FieldDetector
-from src.game_events import EventType, GameConfig, GameEvent
+from src.field_detector import FieldBounds, FieldDetector
+from src.game_events import GameConfig, GameEvent
 from src.goal_detector import GoalDetector
 from src.statistics import Statistics
 from src.video_source import VideoSource
@@ -30,11 +25,11 @@ logger = logging.getLogger(__name__)
 
 TARGET_FPS = 30.0
 FRAME_INTERVAL = 1.0 / TARGET_FPS
-CALIBRATION_FRAMES = 20  # frames sampled for field auto-detection
+CALIBRATION_FRAMES = 20
 
 
 class Controller:
-    """Wires all backend components together and drives the game loop on a background thread."""
+    """Wires all backend components together and drives the game loop."""
 
     def __init__(self, gui: "KickerGUI") -> None:
         self._gui = gui
@@ -47,16 +42,15 @@ class Controller:
         self._thread: Optional[threading.Thread] = None
         self._field_detector = FieldDetector()
 
-    # ── Public API ────────────────────────────────────────────────────────────
-
     def start_game(self, config: GameConfig) -> None:
         """Initialise all components, auto-calibrate, and start the game loop."""
         self._config = config
         self._stop_event.clear()
 
-        # Open camera with sensible request resolution
-        req_w = config.field_x2 - config.field_x1 if config.field_x2 > config.field_x1 else 640
-        req_h = config.field_y2 - config.field_y1 if config.field_y2 > config.field_y1 else 480
+        field_w = config.field_x2 - config.field_x1
+        field_h = config.field_y2 - config.field_y1
+        req_w = field_w if field_w > 0 else 640
+        req_h = field_h if field_h > 0 else 480
 
         self._video = VideoSource(
             camera_index=config.camera_index,
@@ -67,20 +61,22 @@ class Controller:
         camera_opened = self._video.open()
         if not camera_opened:
             logger.warning(
-                "Camera %d not available — running without video feed.", config.camera_index
+                "Camera %d not available — running without video feed.",
+                config.camera_index,
             )
 
-        # Read back actual frame dimensions from the camera
         if camera_opened:
-            config.field_x2 = self._video.frame_width
-            config.field_y2 = self._video.frame_height
             config.field_x1 = 0
             config.field_y1 = 0
+            config.field_x2 = self._video.frame_width
+            config.field_y2 = self._video.frame_height
 
-        # ── Auto field detection ───────────────────────────────────────────────
         field_corners: Optional[list[tuple[int, int]]] = None
         if camera_opened:
-            logger.info("Auto-calibration: sampling %d frames for field detection …", CALIBRATION_FRAMES)
+            logger.info(
+                "Auto-calibration: sampling %d frames for field detection.",
+                CALIBRATION_FRAMES,
+            )
             bounds = self._field_detector.detect_from_frames(
                 self._video, num_frames=CALIBRATION_FRAMES
             )
@@ -91,22 +87,19 @@ class Controller:
                 config.field_y2 = bounds.y2
                 field_corners = bounds.corners
                 logger.info(
-                    "Field detected: x=%d–%d  y=%d–%d",
+                    "Field detected: x=%d–%d y=%d–%d",
                     bounds.x1, bounds.x2, bounds.y1, bounds.y2,
                 )
             else:
                 logger.warning(
-                    "Field auto-detection failed — using full-frame defaults (%dx%d).",
+                    "Field auto-detection failed — using full frame (%dx%d).",
                     config.field_x2,
                     config.field_y2,
                 )
 
-        # ── Build detectors ────────────────────────────────────────────────────
         self._detector = BallDetector()
 
         if camera_opened and field_corners is not None:
-            # Create a static field mask once; the camera resolution is now known.
-            from src.field_detector import FieldBounds
             bounds_obj = FieldBounds(
                 corners=field_corners,
                 x1=config.field_x1,
@@ -114,8 +107,9 @@ class Controller:
                 x2=config.field_x2,
                 y2=config.field_y2,
             )
-            mask = bounds_obj.create_mask((config.field_y2, config.field_x2))
-            self._detector.set_field_mask(mask)
+            self._detector.set_field_mask(
+                bounds_obj.create_mask((config.field_y2, config.field_x2))
+            )
 
         self._goal_detector = GoalDetector(
             field_x1=config.field_x1,
@@ -140,7 +134,7 @@ class Controller:
             target=self._game_loop, daemon=True, name="game-loop"
         )
         self._thread.start()
-        logger.info("Game started. Config: %s", config)
+        logger.info("Game started: %s", config)
 
     def end_game(self) -> None:
         """Stop the loop and show the summary screen."""
@@ -155,7 +149,7 @@ class Controller:
         logger.info("Game ended. Score: %d:%d", score_left, score_right)
 
     def new_game(self) -> None:
-        """Reset everything and return to the start screen."""
+        """Stop the current game and return to the start screen."""
         self._stop_event.set()
         if self._video:
             self._video.release()
@@ -165,7 +159,7 @@ class Controller:
         self._detector = None
         self._config = None
         self._gui.show_start_screen()
-        logger.info("New game requested — back to start screen.")
+        logger.info("New game — returning to start screen.")
 
     def quit(self) -> None:
         """Clean shutdown."""
@@ -174,10 +168,10 @@ class Controller:
             self._video.release()
         logger.info("Application quit.")
 
-    # ── Background thread ─────────────────────────────────────────────────────
-
     def _game_loop(self) -> None:
         signal = self._gui.frame_signal
+        last_read_ok = True
+        logger.debug("Game loop started.")
 
         while not self._stop_event.is_set():
             t_start = time.monotonic()
@@ -188,7 +182,14 @@ class Controller:
             if self._video and self._video.is_opened():
                 ok, frame = self._video.read()
                 if not ok:
+                    if last_read_ok:
+                        logger.warning(
+                            "Frame read failed — camera may have disconnected."
+                        )
+                    last_read_ok = False
                     frame = None
+                else:
+                    last_read_ok = True
 
             if frame is not None and self._detector:
                 position = self._detector.detect(frame)
@@ -203,11 +204,11 @@ class Controller:
             score_left = self._goal_detector.score_left if self._goal_detector else 0
             score_right = self._goal_detector.score_right if self._goal_detector else 0
 
-            # Emit to main thread via queued signal connection
             signal.update.emit(frame, position, self._stats, score_left, score_right)
 
-            # Throttle to TARGET_FPS
             elapsed = time.monotonic() - t_start
             sleep_time = FRAME_INTERVAL - elapsed
             if sleep_time > 0:
                 time.sleep(sleep_time)
+
+        logger.debug("Game loop stopped.")

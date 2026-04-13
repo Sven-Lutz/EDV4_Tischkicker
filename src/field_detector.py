@@ -1,17 +1,14 @@
 """Automatic playing-field detection via HSV colour segmentation.
 
-The green felt surface is found by:
-  1. Blurring to suppress noise
-  2. HSV thresholding for typical green felt colours
-  3. Morphological cleanup
-  4. Picking the largest contour that covers >10 % of the frame
-  5. Approximating it as a quadrilateral (or falling back to a bounding rect)
+Finds the green felt surface and returns a FieldBounds with corners and a
+bounding box. detect_from_frames() samples several frames and uses the median
+result for robustness against partial occlusion.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import cv2
@@ -19,12 +16,11 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Broad HSV range that covers most green felt under varying lighting.
-# Hue 30–90 captures yellow-green through cyan-green.
+# Broad green range — covers most felt colours under varying lighting.
 _FIELD_HSV_LOWER = np.array([30, 30, 25], dtype=np.uint8)
 _FIELD_HSV_UPPER = np.array([95, 255, 210], dtype=np.uint8)
 
-# Minimum fraction of total frame area that must be green for detection to succeed.
+# Field must cover at least this fraction of the frame to be accepted.
 _MIN_FIELD_FRACTION = 0.10
 
 
@@ -57,7 +53,7 @@ class FieldBounds:
         return self.y2 - self.y1
 
     def create_mask(self, frame_shape: tuple[int, int]) -> np.ndarray:
-        """Return a binary mask (uint8, 255 inside field) of the given frame shape."""
+        """Return a uint8 binary mask (255 inside field) for *frame_shape*."""
         h, w = frame_shape[:2]
         mask = np.zeros((h, w), dtype=np.uint8)
         pts = np.array(self.corners, dtype=np.int32)
@@ -71,8 +67,6 @@ class FieldDetector:
     def __init__(self) -> None:
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
 
-    # ── Public API ────────────────────────────────────────────────────────────
-
     def detect(self, frame: np.ndarray) -> Optional[FieldBounds]:
         """Detect the field in a single frame. Returns None on failure."""
         blurred = cv2.GaussianBlur(frame, (11, 11), 0)
@@ -82,9 +76,11 @@ class FieldDetector:
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self._kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self._kernel)
 
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
         if not contours:
-            logger.debug("FieldDetector: no contours found")
+            logger.debug("No green contours found.")
             return None
 
         largest = max(contours, key=cv2.contourArea)
@@ -93,18 +89,16 @@ class FieldDetector:
 
         if area < frame_area * _MIN_FIELD_FRACTION:
             logger.debug(
-                "FieldDetector: largest contour covers only %.1f %% of frame",
+                "Largest contour covers only %.1f %% of frame — too small.",
                 100.0 * area / frame_area,
             )
             return None
 
-        # Try to fit a quadrilateral
         peri = cv2.arcLength(largest, True)
         approx = cv2.approxPolyDP(largest, 0.02 * peri, True)
 
         if len(approx) == 4:
-            pts = approx.reshape(4, 2)
-            pts = _order_corners(pts)
+            pts = _order_corners(approx.reshape(4, 2))
             x1 = int(pts[:, 0].min())
             y1 = int(pts[:, 1].min())
             x2 = int(pts[:, 0].max())
@@ -116,12 +110,13 @@ class FieldDetector:
                 x2=x2,
                 y2=y2,
             )
-            logger.debug("FieldDetector: quad fit — %s", bounds)
+            logger.debug("Quad fit: %s", bounds)
             return bounds
 
-        # Fallback: axis-aligned bounding rect
         x, y, w, h = cv2.boundingRect(largest)
-        logger.debug("FieldDetector: bounding rect fallback — x=%d y=%d w=%d h=%d", x, y, w, h)
+        logger.debug(
+            "Bounding rect fallback: x=%d y=%d w=%d h=%d", x, y, w, h
+        )
         return FieldBounds.from_rect(x, y, w, h)
 
     def detect_from_frames(
@@ -129,10 +124,10 @@ class FieldDetector:
         video_source,
         num_frames: int = 15,
     ) -> Optional[FieldBounds]:
-        """Sample *num_frames* frames from *video_source* and return the median bounds.
+        """Sample *num_frames* frames and return the median field bounds.
 
-        Uses the median of all successful detections so that occasional bad frames
-        (e.g. a hand covering part of the field) do not throw off the result.
+        Uses the median across all successful detections so that occasional
+        bad frames do not skew the result.
         """
         results: list[FieldBounds] = []
 
@@ -145,13 +140,14 @@ class FieldDetector:
                 results.append(bounds)
 
         if not results:
-            logger.warning("FieldDetector: could not detect field in %d frames", num_frames)
+            logger.warning(
+                "Field not detected in any of %d frames.", num_frames
+            )
             return None
 
         if len(results) == 1:
             return results[0]
 
-        # Median of each boundary coordinate for robustness.
         x1s = sorted(b.x1 for b in results)
         y1s = sorted(b.y1 for b in results)
         x2s = sorted(b.x2 for b in results)
@@ -159,28 +155,22 @@ class FieldDetector:
         mid = len(results) // 2
 
         x1, y1, x2, y2 = x1s[mid], y1s[mid], x2s[mid], y2s[mid]
-        # Recompute corners from the median bounding box
         bounds = FieldBounds.from_rect(x1, y1, x2 - x1, y2 - y1)
         logger.info(
-            "FieldDetector: field detected from %d/%d frames — x1=%d y1=%d x2=%d y2=%d",
+            "Field detected from %d/%d frames: x=%d–%d y=%d–%d",
             len(results),
             num_frames,
             x1,
-            y1,
             x2,
+            y1,
             y2,
         )
         return bounds
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-
 def _order_corners(pts: np.ndarray) -> np.ndarray:
-    """Sort 4 (x,y) points into [TL, TR, BR, BL] order."""
-    # Sort by y then split into top/bottom halves
-    idx = np.argsort(pts[:, 1])
-    pts = pts[idx]
-    top = pts[:2][np.argsort(pts[:2, 0])]     # TL, TR  (smaller x first)
-    bottom = pts[2:][np.argsort(pts[2:, 0])]  # BL, BR  (smaller x first)
-    return np.array([top[0], top[1], bottom[1], bottom[0]])  # TL TR BR BL
+    """Sort four (x, y) points into [TL, TR, BR, BL] order."""
+    pts = pts[np.argsort(pts[:, 1])]
+    top = pts[:2][np.argsort(pts[:2, 0])]
+    bottom = pts[2:][np.argsort(pts[2:, 0])]
+    return np.array([top[0], top[1], bottom[1], bottom[0]])

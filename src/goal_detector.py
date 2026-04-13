@@ -1,41 +1,27 @@
-"""Goal detection with 2-D goal zones and edge-triggered scoring.
+"""Goal zone detection with edge-triggered scoring and optional 2-D bounds.
 
-Improvements over the original 1-D approach:
-* **Edge detection** — a goal fires only when the ball *enters* a zone, not on
-  every frame it spends inside it.  This eliminates the need for a long cooldown
-  to avoid double-counting.
-* **Cooldown** is kept as a secondary guard: even if the ball briefly leaves and
-  re-enters a zone quickly it will not score again.
-* **2-D goal zones** — when the field has been calibrated the goal height is
-  bounded correctly so that a ball near the lateral edge of the field that
-  drifts past x=goal_line but is NOT within the goal opening is ignored.
-  Fall-back (no y-constraint) is available for unit tests and when the field
-  has not yet been calibrated.
-* **``configure_from_corners()``** accepts the four field corners returned by
-  ``FieldDetector`` and derives the correct 2-D goal rectangles automatically.
-
-Public interface is backward-compatible with the original class so that all
-existing tests continue to pass.
+A goal fires only when the ball enters a zone (edge-triggered), not for every
+frame it stays inside. Cooldown provides secondary double-count protection.
+Call configure_from_corners() after field calibration to add y-axis bounds.
 """
 
 from __future__ import annotations
 
 import logging
-import time
 from typing import Optional
+
+import cv2
 
 from src.game_events import BallPosition, EventType, GameEvent, Team
 
 logger = logging.getLogger(__name__)
 
-# Fraction of field width used as goal depth (distance behind the goal line).
-_GOAL_DEPTH_RATIO = 0.04
-# Fraction of field height that the goal opening spans.
-_GOAL_HEIGHT_RATIO = 0.28
+_GOAL_DEPTH_RATIO = 0.04   # goal depth as fraction of field width
+_GOAL_HEIGHT_RATIO = 0.28  # goal opening height as fraction of field height
 
 
 class _GoalZone:
-    """A 2-D rectangular region that triggers a goal when entered."""
+    """Rectangular zone that triggers a goal when the ball enters it."""
 
     def __init__(
         self,
@@ -56,8 +42,7 @@ class _GoalZone:
         self._use_y_bounds = use_y_bounds
 
     def contains(self, px: float, py: float) -> bool:
-        in_x = self.x <= px <= self.x + self.w
-        if not in_x:
+        if not (self.x <= px <= self.x + self.w):
             return False
         if self._use_y_bounds:
             return self.y <= py <= self.y + self.h
@@ -72,8 +57,7 @@ class GoalDetector:
         goal_zone_width     — depth of each goal zone in pixels
         cooldown_frames     — minimum frames between two goal events
 
-    Use ``configure_from_corners()`` to enable proper 2-D detection after
-    field calibration.
+    Call configure_from_corners() to enable proper 2-D detection.
     """
 
     DEFAULT_GOAL_ZONE_WIDTH = 40
@@ -95,18 +79,15 @@ class GoalDetector:
         self._score_right = 0
         self._frames_since_goal = cooldown_frames  # start ready to detect
 
-        # Edge-detection state: was ball in each zone on the previous frame?
+        # Was the ball in each zone on the previous frame?
         self._prev_in_left = False
         self._prev_in_right = False
 
-        # 2-D goal zones (set by configure_from_corners)
+        # Populated by configure_from_corners() or update_field_bounds()
         self._zone_left: Optional[_GoalZone] = None
         self._zone_right: Optional[_GoalZone] = None
 
-        # Build default 1-D-style zones (no y bounds)
         self._rebuild_default_zones()
-
-    # ── Properties ────────────────────────────────────────────────────────────
 
     @property
     def score_left(self) -> int:
@@ -116,19 +97,16 @@ class GoalDetector:
     def score_right(self) -> int:
         return self._score_right
 
-    # ── Configuration ─────────────────────────────────────────────────────────
-
     def configure_from_corners(
         self,
         corners: list[tuple[int, int]],
     ) -> None:
-        """Derive proper 2-D goal zones from field corner coordinates.
-
-        *corners* must be in [TL, TR, BR, BL] order (as returned by
-        ``FieldDetector``).
-        """
+        """Derive 2-D goal zones from field corners [TL, TR, BR, BL]."""
         if len(corners) < 4:
-            logger.warning("configure_from_corners: need exactly 4 corners, got %d", len(corners))
+            logger.warning(
+                "configure_from_corners: expected 4 corners, got %d.",
+                len(corners),
+            )
             return
 
         tl, tr, br, bl = corners
@@ -144,7 +122,7 @@ class GoalDetector:
         right_mid_x = int((tr[0] + br[0]) / 2)
         right_mid_y = int((tr[1] + br[1]) / 2)
 
-        # Left goal zone: ball enters from the right → RIGHT team scores
+        # Ball enters from the right — RIGHT team scores.
         self._zone_left = _GoalZone(
             name="Left",
             x=left_mid_x - goal_depth,
@@ -155,7 +133,7 @@ class GoalDetector:
             use_y_bounds=True,
         )
 
-        # Right goal zone: ball enters from the left → LEFT team scores
+        # Ball enters from the left — LEFT team scores.
         self._zone_right = _GoalZone(
             name="Right",
             x=right_mid_x,
@@ -166,12 +144,11 @@ class GoalDetector:
             use_y_bounds=True,
         )
 
-        # Update 1-D fallback bounds too
         self._field_x1 = tl[0]
         self._field_x2 = tr[0]
 
         logger.info(
-            "GoalDetector 2-D zones configured: left x=%d–%d y=%d–%d | right x=%d–%d y=%d–%d",
+            "2-D goal zones set: left x=%d–%d y=%d–%d | right x=%d–%d y=%d–%d",
             self._zone_left.x,
             self._zone_left.x + self._zone_left.w,
             self._zone_left.y,
@@ -189,37 +166,43 @@ class GoalDetector:
         field_y1: int = 0,
         field_y2: int = 480,
     ) -> None:
-        """Update goal zones from simple field bounding box (no corners)."""
+        """Update goal zones from a simple axis-aligned bounding box."""
         self._field_x1 = field_x1
         self._field_x2 = field_x2
         self._rebuild_default_zones(field_y1, field_y2)
-
-    # ── Main update loop ──────────────────────────────────────────────────────
+        logger.debug(
+            "Goal zones updated: x=%d–%d y=%d–%d",
+            field_x1, field_x2, field_y1, field_y2,
+        )
 
     def update(self, position: Optional[BallPosition]) -> Optional[GameEvent]:
-        """Call once per frame. Returns a GameEvent if a goal was detected."""
+        """Call once per frame. Returns a GameEvent if a goal was scored."""
         self._frames_since_goal += 1
 
         if position is None or not position.detected:
-            # Ball lost — reset edge-detection state so the next detection
-            # doesn't immediately re-fire if the ball reappears in a zone.
+            # Ball lost — clear edge state so re-entry can trigger a goal.
             self._prev_in_left = False
             self._prev_in_right = False
             return None
 
         x, y = position.x, position.y
 
-        in_left = self._zone_left.contains(x, y) if self._zone_left else (
-            x <= self._field_x1 + self._goal_zone_width
+        in_left = (
+            self._zone_left.contains(x, y)
+            if self._zone_left
+            else x <= self._field_x1 + self._goal_zone_width
         )
-        in_right = self._zone_right.contains(x, y) if self._zone_right else (
-            x >= self._field_x2 - self._goal_zone_width
+        in_right = (
+            self._zone_right.contains(x, y)
+            if self._zone_right
+            else x >= self._field_x2 - self._goal_zone_width
         )
 
         event: Optional[GameEvent] = None
+        cooldown_ok = self._frames_since_goal >= self._cooldown_frames
 
-        # Left goal zone — RIGHT team scores
-        if in_left and not self._prev_in_left and self._frames_since_goal >= self._cooldown_frames:
+        # Left zone — RIGHT team scores
+        if in_left and not self._prev_in_left and cooldown_ok:
             self._score_right += 1
             self._frames_since_goal = 0
             event = GameEvent(
@@ -230,10 +213,12 @@ class GoalDetector:
                 score_right=self._score_right,
                 description=f"Tor Rechts · {self._score_left}:{self._score_right}",
             )
-            logger.info("Goal RIGHT! Score %d:%d", self._score_left, self._score_right)
+            logger.info(
+                "Goal RIGHT — score %d:%d", self._score_left, self._score_right
+            )
 
-        # Right goal zone — LEFT team scores
-        elif in_right and not self._prev_in_right and self._frames_since_goal >= self._cooldown_frames:
+        # Right zone — LEFT team scores
+        elif in_right and not self._prev_in_right and cooldown_ok:
             self._score_left += 1
             self._frames_since_goal = 0
             event = GameEvent(
@@ -244,7 +229,9 @@ class GoalDetector:
                 score_right=self._score_right,
                 description=f"Tor Links · {self._score_left}:{self._score_right}",
             )
-            logger.info("Goal LEFT! Score %d:%d", self._score_left, self._score_right)
+            logger.info(
+                "Goal LEFT — score %d:%d", self._score_left, self._score_right
+            )
 
         self._prev_in_left = in_left
         self._prev_in_right = in_right
@@ -256,10 +243,10 @@ class GoalDetector:
         self._frames_since_goal = self._cooldown_frames
         self._prev_in_left = False
         self._prev_in_right = False
+        logger.debug("GoalDetector reset.")
 
-    def draw(self, frame) -> None:
-        """Draw goal zone outlines onto *frame* for debugging / HUD."""
-        import cv2
+    def draw(self, frame: np.ndarray) -> None:
+        """Draw goal zone outlines onto *frame* for HUD overlay."""
         for zone in (self._zone_left, self._zone_right):
             if zone is None:
                 continue
@@ -280,14 +267,12 @@ class GoalDetector:
                 1,
             )
 
-    # ── Private helpers ───────────────────────────────────────────────────────
-
     def _rebuild_default_zones(
         self,
         field_y1: int = 0,
         field_y2: int = 480,
     ) -> None:
-        """Build 1-D-style goal zones (y bounds ignored) from x bounds."""
+        """Build 1-D-style zones with no y constraint (backward compatibility)."""
         self._zone_left = _GoalZone(
             name="Left",
             x=self._field_x1,
@@ -295,7 +280,7 @@ class GoalDetector:
             w=self._goal_zone_width,
             h=field_y2 - field_y1,
             scoring_team=Team.RIGHT,
-            use_y_bounds=False,  # backward compat: any y counts
+            use_y_bounds=False,
         )
         self._zone_right = _GoalZone(
             name="Right",

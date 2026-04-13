@@ -1,17 +1,7 @@
-"""Kicker GT3 — PyQt6 main window with three screens.
+"""Kicker GT3 PyQt6 main window.
 
-Screen flow:
-  StartScreen  →  DashboardScreen  →  SummaryScreen
-                                           │
-                                           └── "Neues Spiel" → StartScreen
-
-Design tokens (dark cockpit, Porsche-red accent):
-  BG      = #0a0a0a
-  SURFACE = #111111
-  ACCENT  = #C41E3A
-  BORDER  = #222222
-  TEXT    = #ffffff
-  DIM     = #777777
+Screen flow: StartScreen → DashboardScreen → SummaryScreen → StartScreen.
+The controller pushes frame data via frame_signal (cross-thread, queued).
 """
 
 from __future__ import annotations
@@ -22,7 +12,7 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 from PyQt6.QtCore import QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QImage, QPixmap
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -41,7 +31,6 @@ from src.game_events import EventType, GameConfig, GameMode, Team
 
 logger = logging.getLogger(__name__)
 
-# ── Design tokens ──────────────────────────────────────────────────────────────
 BG = "#0a0a0a"
 SURFACE = "#111111"
 SURFACE2 = "#181818"
@@ -60,15 +49,12 @@ _BASE_STYLE = f"""
         padding: 6px 10px;
         font-size: 14px;
     }}
-    QScrollArea, QScrollArea > QWidget > QWidget {{ background-color: {SURFACE}; border: none; }}
-    QScrollBar:vertical {{
-        background: {SURFACE};
-        width: 6px;
+    QScrollArea, QScrollArea > QWidget > QWidget {{
+        background-color: {SURFACE};
+        border: none;
     }}
-    QScrollBar::handle:vertical {{
-        background: {BORDER};
-        border-radius: 3px;
-    }}
+    QScrollBar:vertical {{ background: {SURFACE}; width: 6px; }}
+    QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 3px; }}
 """
 
 
@@ -95,18 +81,23 @@ def _btn(
             background-color: {hover_bg};
             {'color: ' + ACCENT + ';' if not accent else ''}
         }}
-        QPushButton:pressed {{
-            background-color: {ACCENT};
-            color: {TEXT};
-        }}
+        QPushButton:pressed {{ background-color: {ACCENT}; color: {TEXT}; }}
     """)
     return b
 
 
-def _label(text: str, size: int = 13, bold: bool = False, color: str = TEXT, align_center: bool = False) -> QLabel:
+def _label(
+    text: str,
+    size: int = 13,
+    bold: bool = False,
+    color: str = TEXT,
+    align_center: bool = False,
+) -> QLabel:
     lbl = QLabel(text)
     weight = "bold" if bold else "normal"
-    lbl.setStyleSheet(f"font-size: {size}px; font-weight: {weight}; color: {color};")
+    lbl.setStyleSheet(
+        f"font-size: {size}px; font-weight: {weight}; color: {color};"
+    )
     if align_center:
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     return lbl
@@ -119,16 +110,12 @@ def _hsep() -> QFrame:
     return f
 
 
-# ── Frame update signal ────────────────────────────────────────────────────────
-
 class FrameUpdateSignal(QObject):
-    """Carries frame data from the background game loop to the main thread."""
+    """Carries frame data from the game-loop thread to the main thread."""
 
     # (frame | None, BallPosition | None, Statistics | None, score_left, score_right)
     update = pyqtSignal(object, object, object, int, int)
 
-
-# ── Stat tile widget ───────────────────────────────────────────────────────────
 
 class _StatTile(QWidget):
     def __init__(self, label: str) -> None:
@@ -146,8 +133,6 @@ class _StatTile(QWidget):
         self._value.setText(text)
 
 
-# ── Score bar ─────────────────────────────────────────────────────────────────
-
 class _ScoreBar(QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -160,7 +145,9 @@ class _ScoreBar(QWidget):
         self._time = _label("00:00", size=20, color=DIM, align_center=True)
         self._right_score = _label("0", size=40, bold=True, align_center=True)
         self._right_name = _label("Rechts", size=15, bold=True, color=DIM)
-        self._right_name.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._right_name.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
 
         layout.addWidget(self._left_name, stretch=2)
         layout.addWidget(self._left_score, stretch=1)
@@ -184,8 +171,6 @@ class _ScoreBar(QWidget):
         self._left_name.setText(left_name)
         self._right_name.setText(right_name)
 
-
-# ── Events list ───────────────────────────────────────────────────────────────
 
 class _EventsWidget(QWidget):
     def __init__(self) -> None:
@@ -224,7 +209,9 @@ class _EventsWidget(QWidget):
             desc = f"Tor {side}  {event.score_left}:{event.score_right}"
             color = ACCENT
         elif event.event_type == EventType.MAX_SPEED:
-            desc = f"Höchstg.  {event.value:.1f} m/s" if event.value else "Höchstg."
+            desc = (
+                f"Höchstg.  {event.value:.1f} m/s" if event.value else "Höchstg."
+            )
             color = "#f0a020"
         else:
             desc = event.description or event.event_type.value
@@ -241,13 +228,12 @@ class _EventsWidget(QWidget):
 
         w = QWidget()
         w.setLayout(row)
-        w.setStyleSheet(f"background: {SURFACE2}; border-bottom: 1px solid {BORDER};")
+        w.setStyleSheet(
+            f"background: {SURFACE2}; border-bottom: 1px solid {BORDER};"
+        )
 
-        # Insert before the trailing stretch
-        count = self._inner.count()
-        self._inner.insertWidget(count - 1, w)
-
-        # Scroll to bottom
+        # Insert before the trailing stretch item.
+        self._inner.insertWidget(self._inner.count() - 1, w)
         self._scroll.verticalScrollBar().setValue(
             self._scroll.verticalScrollBar().maximum()
         )
@@ -259,8 +245,6 @@ class _EventsWidget(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-
-# ── Screen 1: Start ───────────────────────────────────────────────────────────
 
 class _StartScreen(QWidget):
     def __init__(self, on_start: Callable[[GameConfig], None]) -> None:
@@ -274,16 +258,13 @@ class _StartScreen(QWidget):
         root.setContentsMargins(80, 50, 80, 50)
         root.setSpacing(0)
 
-        # Header
-        title = _label("KICKER GT3", size=52, bold=True, align_center=True)
-        sub = _label("EDV4 · 2026", size=13, color=DIM, align_center=True)
-        root.addWidget(title)
-        root.addWidget(sub)
+        root.addWidget(_label("KICKER GT3", size=52, bold=True, align_center=True))
+        root.addWidget(_label("EDV4 · 2026", size=13, color=DIM, align_center=True))
         root.addSpacing(30)
         root.addWidget(_hsep())
         root.addSpacing(24)
 
-        # Mode buttons
+        # Mode selection
         mode_row = QHBoxLayout()
         mode_row.setSpacing(16)
         self._btn_1v1 = _btn("1 gegen 1", font_size=14, accent=True)
@@ -305,7 +286,9 @@ class _StartScreen(QWidget):
 
         left_col = QVBoxLayout()
         left_col.setSpacing(8)
-        left_col.addWidget(_label("TEAM LINKS", size=11, bold=True, color=ACCENT, align_center=True))
+        left_col.addWidget(
+            _label("TEAM LINKS", size=11, bold=True, color=ACCENT, align_center=True)
+        )
         self._l1 = QLineEdit()
         self._l1.setPlaceholderText("Spieler 1")
         self._l1.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -321,7 +304,9 @@ class _StartScreen(QWidget):
 
         right_col = QVBoxLayout()
         right_col.setSpacing(8)
-        right_col.addWidget(_label("TEAM RECHTS", size=11, bold=True, color=DIM, align_center=True))
+        right_col.addWidget(
+            _label("TEAM RECHTS", size=11, bold=True, color=DIM, align_center=True)
+        )
         self._r1 = QLineEdit()
         self._r1.setPlaceholderText("Spieler 1")
         self._r1.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -340,11 +325,16 @@ class _StartScreen(QWidget):
         root.addLayout(teams)
         root.addStretch()
 
-        # Camera hint
-        root.addWidget(_label("Kamera: Index 0  ·  Namen sind optional", size=11, color=DIM, align_center=True))
+        root.addWidget(
+            _label(
+                "Kamera: Index 0  ·  Namen sind optional",
+                size=11,
+                color=DIM,
+                align_center=True,
+            )
+        )
         root.addSpacing(20)
 
-        # Start button
         start = _btn("SPIEL STARTEN", font_size=18, accent=True)
         start.setFixedWidth(280)
         start.setFixedHeight(52)
@@ -358,13 +348,21 @@ class _StartScreen(QWidget):
     def _set_mode(self, mode: GameMode) -> None:
         self._mode = mode
         if mode == GameMode.ONE_VS_ONE:
-            self._btn_1v1.setStyleSheet(self._btn_1v1.styleSheet().replace(SURFACE, ACCENT))
-            self._btn_2v2.setStyleSheet(self._btn_2v2.styleSheet().replace(ACCENT, SURFACE))
+            self._btn_1v1.setStyleSheet(
+                self._btn_1v1.styleSheet().replace(SURFACE, ACCENT)
+            )
+            self._btn_2v2.setStyleSheet(
+                self._btn_2v2.styleSheet().replace(ACCENT, SURFACE)
+            )
             self._l2.setVisible(False)
             self._r2.setVisible(False)
         else:
-            self._btn_2v2.setStyleSheet(self._btn_2v2.styleSheet().replace(SURFACE, ACCENT))
-            self._btn_1v1.setStyleSheet(self._btn_1v1.styleSheet().replace(ACCENT, SURFACE))
+            self._btn_2v2.setStyleSheet(
+                self._btn_2v2.styleSheet().replace(SURFACE, ACCENT)
+            )
+            self._btn_1v1.setStyleSheet(
+                self._btn_1v1.styleSheet().replace(ACCENT, SURFACE)
+            )
             self._l2.setVisible(True)
             self._r2.setVisible(True)
 
@@ -379,10 +377,9 @@ class _StartScreen(QWidget):
             team_left_names=left_names,
             team_right_names=right_names,
         )
+        logger.debug("Start requested: %s", config)
         self._on_start(config)
 
-
-# ── Screen 2: Live Dashboard ──────────────────────────────────────────────────
 
 class _DashboardScreen(QWidget):
     def __init__(self, on_end_game: Callable[[], None]) -> None:
@@ -397,42 +394,44 @@ class _DashboardScreen(QWidget):
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(10)
 
-        # Header row
         hdr = QHBoxLayout()
         hdr.addWidget(_label("KICKER GT3", size=18, bold=True))
         hdr.addStretch()
-        live = _label("● LIVE", size=13, color=ACCENT)
-        hdr.addWidget(live)
+        hdr.addWidget(_label("● LIVE", size=13, color=ACCENT))
         root.addLayout(hdr)
 
-        # Score bar
         self._score_bar = _ScoreBar()
         root.addWidget(self._score_bar)
 
-        # Stats tiles
         stats_row = QHBoxLayout()
         stats_row.setSpacing(8)
         self._tile_max_spd = _StatTile("Max Geschw.")
         self._tile_cur_spd = _StatTile("Akt. Geschw.")
         self._tile_rebounds = _StatTile("Abpralle")
         self._tile_shots = _StatTile("Schüsse")
-        for tile in (self._tile_max_spd, self._tile_cur_spd, self._tile_rebounds, self._tile_shots):
+        for tile in (
+            self._tile_max_spd,
+            self._tile_cur_spd,
+            self._tile_rebounds,
+            self._tile_shots,
+        ):
             stats_row.addWidget(tile)
         root.addLayout(stats_row)
 
-        # Main content: video + side panel
         content = QHBoxLayout()
         content.setSpacing(10)
 
-        # Video display
         self._video_lbl = QLabel()
         self._video_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._video_lbl.setStyleSheet(f"background: #000; border: 1px solid {BORDER};")
-        self._video_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._video_lbl.setStyleSheet(
+            f"background: #000; border: 1px solid {BORDER};"
+        )
+        self._video_lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self._video_lbl.setMinimumSize(480, 270)
         content.addWidget(self._video_lbl, stretch=3)
 
-        # Side panel
         side = QVBoxLayout()
         side.setSpacing(8)
         side.addWidget(_label("EREIGNISSE", size=10, bold=True, color=DIM))
@@ -450,8 +449,6 @@ class _DashboardScreen(QWidget):
         content.addWidget(side_w, stretch=1)
         root.addLayout(content, stretch=1)
 
-    # ── Slot (called from GUI main thread via queued signal) ──────────────────
-
     def update_frame(
         self,
         frame,
@@ -460,22 +457,30 @@ class _DashboardScreen(QWidget):
         score_left: int,
         score_right: int,
     ) -> None:
-        # Video frame with overlays
         if frame is not None:
             self._render_video(frame, position, stats)
 
-        # Stats
         if stats is not None:
             elapsed = stats.game_time_seconds
-            left_name = " & ".join(self._config.team_left_names) if self._config else "Links"
-            right_name = " & ".join(self._config.team_right_names) if self._config else "Rechts"
-            self._score_bar.update(score_left, score_right, elapsed, left_name, right_name)
+            left_name = (
+                " & ".join(self._config.team_left_names)
+                if self._config
+                else "Links"
+            )
+            right_name = (
+                " & ".join(self._config.team_right_names)
+                if self._config
+                else "Rechts"
+            )
+            self._score_bar.update(
+                score_left, score_right, elapsed, left_name, right_name
+            )
             self._tile_max_spd.set_value(f"{stats.max_speed_ms:.1f} m/s")
             self._tile_cur_spd.set_value(f"{stats.current_speed_ms:.1f} m/s")
             self._tile_rebounds.set_value(str(stats.rebound_count))
             self._tile_shots.set_value(str(stats.shot_count))
 
-            # New events
+            # Append only events that have not been displayed yet.
             events = stats.events
             for i in range(self._events_shown, len(events)):
                 self._events.add_event_if_new(events[i], elapsed)
@@ -486,20 +491,23 @@ class _DashboardScreen(QWidget):
         self._events_shown = 0
         self._events.clear()
         self._score_bar.update(0, 0, 0.0)
-        for tile in (self._tile_max_spd, self._tile_cur_spd, self._tile_rebounds, self._tile_shots):
+        for tile in (
+            self._tile_max_spd,
+            self._tile_cur_spd,
+            self._tile_rebounds,
+            self._tile_shots,
+        ):
             tile.set_value("—")
         self._video_lbl.clear()
         self._video_lbl.setText("Kamera wird geöffnet …")
         self._video_lbl.setStyleSheet(
-            f"background: #000; border: 1px solid {BORDER}; color: {DIM}; font-size: 13px;"
+            f"background: #000; border: 1px solid {BORDER};"
+            f" color: {DIM}; font-size: 13px;"
         )
-
-    # ── Rendering ─────────────────────────────────────────────────────────────
 
     def _render_video(self, frame: np.ndarray, position, stats) -> None:
         display = frame.copy()
 
-        # Trajectory
         if stats is not None:
             trajectory = stats.trajectory
             n = len(trajectory)
@@ -507,11 +515,12 @@ class _DashboardScreen(QWidget):
                 p1 = (int(trajectory[i - 1].x), int(trajectory[i - 1].y))
                 p2 = (int(trajectory[i].x), int(trajectory[i].y))
                 alpha = i / n
-                r = int(255 * alpha)
-                g = int(80 * alpha)
-                cv2.line(display, p1, p2, (r, g, 0), 1, cv2.LINE_AA)
+                cv2.line(
+                    display, p1, p2,
+                    (int(255 * alpha), int(80 * alpha), 0),
+                    1, cv2.LINE_AA,
+                )
 
-        # Ball circle
         if position is not None:
             cx, cy = int(position.x), int(position.y)
             cv2.circle(display, (cx, cy), 14, (255, 107, 0), 2, cv2.LINE_AA)
@@ -534,8 +543,6 @@ class _DashboardScreen(QWidget):
         self._video_lbl.setPixmap(pixmap)
 
 
-# ── Screen 3: Summary ─────────────────────────────────────────────────────────
-
 class _SummaryScreen(QWidget):
     def __init__(
         self,
@@ -552,18 +559,15 @@ class _SummaryScreen(QWidget):
         root.setContentsMargins(40, 30, 40, 30)
         root.setSpacing(12)
 
-        # Header
         hdr = QHBoxLayout()
         hdr.addWidget(_label("KICKER GT3", size=18, bold=True))
         hdr.addStretch()
         hdr.addWidget(_label("SPIELZUSAMMENFASSUNG", size=13, color=DIM))
         root.addLayout(hdr)
 
-        # Final score card
         self._score_card = _ScoreBar()
         root.addWidget(self._score_card)
 
-        # Stat tiles
         tiles_row = QHBoxLayout()
         tiles_row.setSpacing(8)
         self._t_maxspd = _StatTile("Max Geschw.")
@@ -574,7 +578,6 @@ class _SummaryScreen(QWidget):
             tiles_row.addWidget(t)
         root.addLayout(tiles_row)
 
-        # Events log + action buttons
         content = QHBoxLayout()
         content.setSpacing(12)
 
@@ -601,18 +604,23 @@ class _SummaryScreen(QWidget):
 
         root.addLayout(content, stretch=1)
 
-    def populate(self, stats, config, score_left: int, score_right: int) -> None:
+    def populate(
+        self,
+        stats,
+        config,
+        score_left: int,
+        score_right: int,
+    ) -> None:
         """Fill the screen with final game data."""
-        from src.statistics import Statistics
-        from src.game_events import GameConfig
-
         self._history.clear()
 
         left_name = " & ".join(config.team_left_names) if config else "Links"
         right_name = " & ".join(config.team_right_names) if config else "Rechts"
-
         elapsed = stats.game_time_seconds if stats else 0.0
-        self._score_card.update(score_left, score_right, elapsed, left_name, right_name)
+
+        self._score_card.update(
+            score_left, score_right, elapsed, left_name, right_name
+        )
 
         if stats:
             mins = int(elapsed // 60)
@@ -621,24 +629,22 @@ class _SummaryScreen(QWidget):
             self._t_shots.set_value(str(stats.shot_count))
             self._t_rebounds.set_value(str(stats.rebound_count))
             self._t_time.set_value(f"{mins:02d}:{secs:02d}")
-
             for evt in stats.events:
                 self._history.add_event_if_new(evt, elapsed)
         else:
-            for tile in (self._t_maxspd, self._t_shots, self._t_rebounds, self._t_time):
+            for tile in (
+                self._t_maxspd, self._t_shots, self._t_rebounds, self._t_time
+            ):
                 tile.set_value("—")
 
-
-# ── Main window ────────────────────────────────────────────────────────────────
 
 class KickerGUI(QMainWindow):
     """Top-level PyQt6 window. Owned by main.py.
 
-    The controller communicates with the GUI exclusively through:
-    * ``frame_signal.update`` — emitted from the game-loop thread
-    * ``show_dashboard()``, ``show_summary()``, ``show_start_screen()`` — called
-      from the controller in the Qt main thread (safe, because they happen before
-      or after the game loop, never concurrently).
+    The controller communicates via:
+    * frame_signal.update — emitted from the game-loop thread (queued connection)
+    * show_dashboard(), show_summary(), show_start_screen() — called from the
+      main thread before or after the game loop, never concurrently.
     """
 
     def __init__(
@@ -654,13 +660,10 @@ class KickerGUI(QMainWindow):
         self._on_new_game_cb = on_new_game
         self._on_quit_cb = on_quit
 
-        # Signal used by the background game loop to push frame data to the GUI.
         self.frame_signal = FrameUpdateSignal()
 
         self._build_ui()
         self.setStyleSheet(_BASE_STYLE)
-
-    # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         self.setWindowTitle("Kicker GT3")
@@ -680,16 +683,14 @@ class KickerGUI(QMainWindow):
         self._stack.addWidget(self._dashboard)  # index 1
         self._stack.addWidget(self._summary)    # index 2
 
-        # Cross-thread frame updates → dashboard slot (queued connection is
-        # automatic because sender and receiver live in different threads)
         self.frame_signal.update.connect(self._dashboard.update_frame)
 
-    # ── Screen transitions ────────────────────────────────────────────────────
-
     def show_start_screen(self) -> None:
+        logger.debug("Showing start screen.")
         self._stack.setCurrentIndex(0)
 
     def show_dashboard(self, config: Optional[GameConfig] = None) -> None:
+        logger.debug("Showing dashboard.")
         self._dashboard.reset(config)
         self._stack.setCurrentIndex(1)
 
@@ -700,12 +701,10 @@ class KickerGUI(QMainWindow):
         score_left: int,
         score_right: int,
     ) -> None:
+        logger.debug("Showing summary: %d:%d", score_left, score_right)
         self._summary.populate(stats, config, score_left, score_right)
         self._stack.setCurrentIndex(2)
 
-    # ── Internal callbacks ────────────────────────────────────────────────────
-
     def _handle_start(self, config: GameConfig) -> None:
-        # Pass config to dashboard so it can show team names, then call controller
         self._dashboard.reset(config)
         self._on_start_cb(config)
