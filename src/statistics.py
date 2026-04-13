@@ -18,7 +18,7 @@ class Statistics:
     Thread-safe: update() and all property reads are protected by a Lock.
     """
 
-    TRAJECTORY_LENGTH = 30
+    TRAJECTORY_LENGTH = 60
     HEATMAP_GAUSSIAN_RADIUS = 15
     SHOT_SPEED_THRESHOLD_LOW = 1.0   # m/s — below this, ball is not in motion
     SHOT_SPEED_THRESHOLD_HIGH = 3.0  # m/s — crossing this triggers a shot count

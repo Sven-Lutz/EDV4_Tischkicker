@@ -268,26 +268,31 @@ class GoalDetector:
             )
 
     def _rebuild_default_zones(
-        self,
-        field_y1: int = 0,
-        field_y2: int = 480,
+            self,
+            field_y1: int = 0,
+            field_y2: int = 480,
     ) -> None:
-        """Build 1-D-style zones with no y constraint (backward compatibility)."""
+        field_height = field_y2 - field_y1
+        goal_height = max(20, int(field_height * _GOAL_HEIGHT_RATIO))
+        goal_y = field_y1 + (field_height - goal_height) // 2
+
         self._zone_left = _GoalZone(
             name="Left",
             x=self._field_x1,
-            y=field_y1,
+            y=goal_y,
             w=self._goal_zone_width,
-            h=field_y2 - field_y1,
+            h=goal_height,
             scoring_team=Team.RIGHT,
-            use_y_bounds=False,
+            use_y_bounds=True,  # ✅ y wird berücksichtigt
         )
+
         self._zone_right = _GoalZone(
             name="Right",
             x=self._field_x2 - self._goal_zone_width,
-            y=field_y1,
+            y=goal_y,
             w=self._goal_zone_width,
-            h=field_y2 - field_y1,
+            h=goal_height,
             scoring_team=Team.LEFT,
-            use_y_bounds=False,
+            use_y_bounds=True,
         )
+
