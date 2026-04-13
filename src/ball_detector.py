@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 class BallDetector:
     """Detects ball by color and shape, smoothed by a Kalman Filter."""
 
+    MIN_AREA = 30.0
+    MAX_AREA = 800.0
+    MIN_ASPECT_RATIO = 0.5  # Allows for motion blur elongation
+    MAX_ASPECT_RATIO = 2.5
+
     def __init__(self, fps: float = 30.0) -> None:
         self._fps = fps
         self._cm_per_pixel = 0.1 # Default, wird vom Controller überschrieben
@@ -61,60 +66,45 @@ class BallDetector:
         return cv2.cvtColor(cv2.merge((l_corrected, a, b)), cv2.COLOR_LAB2BGR)
 
     def detect(self, frame: np.ndarray) -> Optional[BallPosition]:
-        # 1. Kalman Prediction
-        self._kalman.predict()
+        """
+        Detect the ball purely by yellow color segmentation.
+        """
 
-        # 2. Preprocessing
-        frame_adj = self._correct_lighting(frame)
-        hsv = cv2.cvtColor(frame_adj, cv2.COLOR_BGR2HSV)
+        # 1. HSV konvertieren
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # 3. HSV Masking
-        mask = cv2.inRange(hsv, self.hsv_lower, self.hsv_upper)
-        if self._field_mask is not None:
-            if self._field_mask.shape != mask.shape:
-                self._field_mask = cv2.resize(self._field_mask, (mask.shape[1], mask.shape[0]))
-            mask = cv2.bitwise_and(mask, mask, mask=self._field_mask)
+        LOWER_YELLOW = np.array([20, 120, 120])
+        UPPER_YELLOW = np.array([35, 255, 255])
 
-        # 4. Clean mask
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self._kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self._kernel)
+        mask = cv2.inRange(hsv, LOWER_YELLOW, UPPER_YELLOW)
 
-        # 5. Find Contours and Filter by Circularity
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # 2. Rauschen entfernen
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-        best_measurement = None
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area < 20: continue # Too small
+        # 3. Konturen finden
+        contours, _ = cv2.findContours(
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
 
-            # CIRCULARITY CHECK: (4 * PI * Area) / Perimeter^2
-            # A perfect circle has circularity = 1.0. A line is near 0.
-            perimeter = cv2.arcLength(cnt, True)
-            if perimeter > 0:
-                circularity = (4 * np.pi * area) / (perimeter ** 2)
-                if circularity > 0.6: # It's round enough to be a ball!
-                    moments = cv2.moments(cnt)
-                    if moments["m00"] > 0:
-                        cx = moments["m10"] / moments["m00"]
-                        cy = moments["m01"] / moments["m00"]
-                        best_measurement = (float(cx), float(cy))
-                        break
+        best_contour = self._pick_best_contour(contours)
+        if best_contour is None:
+            return None
 
-        # 6. Kalman Correction
-        if best_measurement:
-            meas = np.array([[np.float32(best_measurement[0])], [np.float32(best_measurement[1])]], dtype=np.float32)
-            if not self._kalman_initialized:
-                self._kalman.statePost = np.array([[best_measurement[0]], [best_measurement[1]], [0], [0]], dtype=np.float32)
-                self._kalman_initialized = True
-            else:
-                self._kalman.correct(meas)
+        # 4. Schwerpunkt berechnen
+        moments = cv2.moments(best_contour)
+        if moments["m00"] <= 0:
+            return None
 
-        # 7. Final State
-        state = self._kalman.statePost
-        self.last_velocity_px_s = np.sqrt(state[2, 0]**2 + state[3, 0]**2)
+        cx = moments["m10"] / moments["m00"]
+        cy = moments["m01"] / moments["m00"]
 
-        return BallPosition(x=float(state[0, 0]), y=float(state[1, 0]), timestamp=time.time())
-
+        return BallPosition(
+            x=float(cx),
+            y=float(cy),
+            timestamp=time.time()
+        )
     def calibrate_hsv_interactive(self, camera, roi_radius: int = 5) -> None:
         """
         Interactive calibration procedure.
@@ -181,3 +171,26 @@ class BallDetector:
         cv2.destroyWindow("Mask")
         cv2.destroyWindow("Result")
         cv2.destroyWindow("HSV Settings")
+
+    def _pick_best_contour(self, contours: tuple) -> Optional[np.ndarray]:
+        """Filter contours based on size and aspect ratio to distinguish ball from players."""
+        best: Optional[np.ndarray] = None
+        best_area = 0.0
+
+        for c in contours:
+            area = cv2.contourArea(c)
+            if not (self.MIN_AREA <= area <= self.MAX_AREA):
+                continue
+            x, y, w, h = cv2.boundingRect(c)
+            if h == 0:
+                continue
+            aspect_ratio = float(w) / float(h)
+
+            # Filter 2: Aspect Ratio (Players are tall/thin, ball is square-ish or blurred)
+            if not (self.MIN_ASPECT_RATIO <= aspect_ratio <= self.MAX_ASPECT_RATIO):
+                continue
+
+            if area > best_area:
+                best_area = area
+                best = c
+        return best
