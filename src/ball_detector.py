@@ -1,8 +1,7 @@
-"""Ball detection using Background Subtraction (MOG2) and shape heuristics.
+"""Ball detection with motion analysis and Kalman Filter prediction.
 
-Instead of static colour filtering, this module detects moving objects
-and identifies the ball based on its expected pixel area and aspect ratio.
-Supply a field mask via set_field_mask() to restrict the search area.
+This module uses MOG2 for detection and a Kalman Filter for trajectory
+smoothing and velocity estimation.
 """
 
 from __future__ import annotations
@@ -20,100 +19,120 @@ logger = logging.getLogger(__name__)
 
 
 class BallDetector:
-    # Heuristics for ball detection (tune these based on your video resolution)
+    """Detects and predicts ball movement using MOG2 and Kalman Filtering."""
+
     MIN_AREA = 30.0
     MAX_AREA = 800.0
-    MIN_ASPECT_RATIO = 0.5   # Allows for motion blur elongation
+    MIN_ASPECT_RATIO = 0.5
     MAX_ASPECT_RATIO = 2.5
 
-    def __init__(self) -> None:
-        # Initialize the background subtractor
-        # history: length of the history (frames)
-        # varThreshold: distance threshold for pixel-background matching
+    def __init__(self, fps: float = 30.0) -> None:
+        """Initialize background subtraction and the Kalman Filter."""
+        self._fps = fps
+
+        # MOG2 Setup
         self._back_sub = cv2.createBackgroundSubtractorMOG2(
             history=500, varThreshold=50, detectShadows=False
         )
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         self._field_mask: Optional[np.ndarray] = None
-        logger.debug("BallDetector initialized with MOG2 background subtraction.")
+
+        # Kalman Filter Setup: 4 state variables (x, y, vx, vy), 2 measurements (x, y)
+        self._kalman = cv2.KalmanFilter(4, 2)
+        dt = 1.0 / self._fps
+
+        # Transition Matrix (Constant Velocity Model)
+        # x_new = x + vx * dt
+        # y_new = y + vy * dt
+        self._kalman.transitionMatrix = np.array([
+            [1, 0, dt, 0],
+            [0, 1, 0, dt],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ], np.float32)
+
+        # Measurement Matrix (We only see x and y)
+        self._kalman.measurementMatrix = np.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0]
+        ], np.float32)
+
+        # Noise Covariance (Tuning these is key for "pro" feel)
+        # Process Noise: How much we trust our physics model (lower = smoother)
+        self._kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.03
+        # Measurement Noise: How much we trust the camera (higher = ignore jitter)
+        self._kalman.measurementNoiseCov = np.eye(2, dtype=np.float32) * 0.5
+
+        self._kalman_initialized = False
+        self.last_velocity_px_s = 0.0
 
     def set_field_mask(self, mask: np.ndarray) -> None:
-        """Restrict detection to pixels where *mask* is non-zero."""
+        """Restrict detection to the field area."""
         self._field_mask = mask.astype(np.uint8)
-        logger.debug("Field mask applied (%dx%d).", mask.shape[1], mask.shape[0])
-
-    def clear_field_mask(self) -> None:
-        """Remove the field mask; the full frame is searched."""
-        self._field_mask = None
-        logger.debug("Field mask cleared.")
 
     def detect(self, frame: np.ndarray) -> Optional[BallPosition]:
-        """Return the ball position in *frame* based on movement, or None if not found."""
-        # 1. Bildentrauschung (Verhindert False-Positives durch Sensor-Rauschen)
-        blurred_frame = cv2.GaussianBlur(frame, (5, 5), 0)
-        roi = blurred_frame
+        """Detect the ball and update the Kalman prediction."""
+        # 1. Prediction Step (Always happen)
+        prediction = self._kalman.predict()
 
-        # 2. Restrict search area to the table to save processing power and avoid noise
+        # 2. Visual Detection (MOG2)
+        blurred = cv2.GaussianBlur(frame, (5, 5), 0)
+        roi = blurred
         if self._field_mask is not None:
             if self._field_mask.shape != frame.shape[:2]:
-                self._field_mask = cv2.resize(
-                    self._field_mask,
-                    (frame.shape[1], frame.shape[0]),
-                    interpolation=cv2.INTER_NEAREST,
-                )
-            roi = cv2.bitwise_and(roi, roi, mask=self._field_mask)
+                self._field_mask = cv2.resize(self._field_mask,
+                                            (frame.shape[1], frame.shape[0]))
+            roi = cv2.bitwise_and(blurred, blurred, mask=self._field_mask)
 
-        # 3. Extract foreground (moving objects)
         fg_mask = self._back_sub.apply(roi)
-
-        # 4. Clean up noise
-        # Zuerst CLOSE: Schließt Löcher IM Ball (verhindert "Donut"-Effekt bei schnellen Bällen)
         cleaned = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self._kernel)
-        # Danach OPEN: Entfernt kleine Störpixel AUßERHALB des Balls
         cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, self._kernel)
 
-        # 5. Find contours of moving objects
-        contours, _ = cv2.findContours(
-            cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
+        contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL,
+                                      cv2.CHAIN_APPROX_SIMPLE)
 
         best_contour = self._pick_best_contour(contours)
-        if best_contour is None:
-            return None
 
-        # 6. Calculate the center of mass using moments
-        moments = cv2.moments(best_contour)
-        if moments["m00"] > 0:
-            cx = moments["m10"] / moments["m00"]
-            cy = moments["m01"] / moments["m00"]
-            return BallPosition(x=float(cx), y=float(cy), timestamp=time.time())
+        # 3. Correction Step
+        if best_contour is not None:
+            moments = cv2.moments(best_contour)
+            if moments["m00"] > 0:
+                cx = float(moments["m10"] / moments["m00"])
+                cy = float(moments["m01"] / moments["m00"])
 
-        return None
+                measurement = np.array([[np.float32(cx)], [np.float32(cy)]])
+
+                if not self._kalman_initialized:
+                    self._kalman.statePost = np.array([[cx], [cy], [0], [0]],
+                                                     dtype=np.float32)
+                    self._kalman_initialized = True
+                else:
+                    self._kalman.correct(measurement)
+
+        # 4. Extract Results from Kalman State
+        state = self._kalman.statePost
+        kx, ky = float(state[0, 0]), float(state[1, 0])
+        vx, vy = float(state[2, 0]), float(state[3, 0])
+
+        # Calculate speed in pixels per second
+        self.last_velocity_px_s = np.sqrt(vx**2 + vy**2)
+
+        # If we are totally lost (no detection for a while), we might return None
+        # but usually, we return the Kalman prediction/filtered position.
+        return BallPosition(x=kx, y=ky, timestamp=time.time())
 
     def _pick_best_contour(self, contours: tuple) -> Optional[np.ndarray]:
-        """Filter contours based on size and aspect ratio to distinguish ball from players."""
+        """Filter contours based on heuristics."""
         best: Optional[np.ndarray] = None
         best_area = 0.0
-
         for c in contours:
             area = cv2.contourArea(c)
-
-            # Filter 1: Size
             if not (self.MIN_AREA <= area <= self.MAX_AREA):
                 continue
-
-            x, y, w, h = cv2.boundingRect(c)
-            if h == 0:
+            _, _, w, h = cv2.boundingRect(c)
+            if h == 0 or not (self.MIN_ASPECT_RATIO <= (w/h) <= self.MAX_ASPECT_RATIO):
                 continue
-
-            aspect_ratio = float(w) / float(h)
-
-            # Filter 2: Aspect Ratio (Players are tall/thin, ball is square-ish or blurred)
-            if not (self.MIN_ASPECT_RATIO <= aspect_ratio <= self.MAX_ASPECT_RATIO):
-                continue
-
             if area > best_area:
                 best_area = area
                 best = c
-
         return best
