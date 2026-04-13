@@ -67,10 +67,23 @@ class BallDetector:
 
     def detect(self, frame: np.ndarray) -> Optional[BallPosition]:
         """
-        Detect the ball purely by yellow color segmentation.
+        Detects the ball using HSV color filtering and Kalman prediction.
+        Uses measurement if available, otherwise Kalman prediction.
         """
 
-        # 1. HSV konvertieren
+        # -------------------------------------------------
+        # 1. Kalman Prediction (IMMER)
+        # -------------------------------------------------
+        prediction = self._kalman.predict()
+        pred_x = float(prediction[0, 0])
+        pred_y = float(prediction[1, 0])
+
+        measurement_available = False
+        cx, cy = None, None
+
+        # -------------------------------------------------
+        # 2. HSV-Farberkennung (Gelber Ball)
+        # -------------------------------------------------
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
         LOWER_YELLOW = np.array([20, 120, 120])
@@ -78,31 +91,61 @@ class BallDetector:
 
         mask = cv2.inRange(hsv, LOWER_YELLOW, UPPER_YELLOW)
 
-        # 2. Rauschen entfernen
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self._kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self._kernel)
 
-        # 3. Konturen finden
         contours, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
 
         best_contour = self._pick_best_contour(contours)
-        if best_contour is None:
-            return None
 
-        # 4. Schwerpunkt berechnen
-        moments = cv2.moments(best_contour)
-        if moments["m00"] <= 0:
-            return None
+        # -------------------------------------------------
+        # 3. Schwerpunkt als Messung bestimmen
+        # -------------------------------------------------
+        if best_contour is not None:
+            moments = cv2.moments(best_contour)
+            if moments["m00"] > 0:
+                cx = moments["m10"] / moments["m00"]
+                cy = moments["m01"] / moments["m00"]
+                measurement_available = True
 
-        cx = moments["m10"] / moments["m00"]
-        cy = moments["m01"] / moments["m00"]
+        # -------------------------------------------------
+        # 4. Kalman initialisieren (einmalig)
+        # -------------------------------------------------
+        if not self._kalman_initialized and measurement_available:
+            self._kalman.statePost = np.array(
+                [[cx], [cy], [0.0], [0.0]],
+                dtype=np.float32
+            )
+            self._kalman_initialized = True
+
+
+        if measurement_available:
+            measurement = np.array(
+                [[np.float32(cx)], [np.float32(cy)]]
+            )
+            self._kalman.correct(measurement)
+
+
+        state = self._kalman.statePost
+
+        kalman_x = float(state[0, 0])
+        kalman_y = float(state[1, 0])
+        vx = float(state[2, 0])
+        vy = float(state[3, 0])
+
+        if measurement_available:
+            out_x, out_y = cx, cy
+        else:
+            out_x, out_y = kalman_x, kalman_y
+
+        # Geschwindigkeit in Pixel/s (optional)
+        self.last_velocity_px_s = np.sqrt(vx * vx + vy * vy)
 
         return BallPosition(
-            x=float(cx),
-            y=float(cy),
+            x=out_x,
+            y=out_y,
             timestamp=time.time()
         )
     def calibrate_hsv_interactive(self, camera, roi_radius: int = 5) -> None:
