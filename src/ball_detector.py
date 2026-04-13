@@ -49,9 +49,11 @@ class BallDetector:
 
     def detect(self, frame: np.ndarray) -> Optional[BallPosition]:
         """Return the ball position in *frame* based on movement, or None if not found."""
-        roi = frame
+        # 1. Bildentrauschung (Verhindert False-Positives durch Sensor-Rauschen)
+        blurred_frame = cv2.GaussianBlur(frame, (5, 5), 0)
+        roi = blurred_frame
 
-        # 1. Restrict search area to the table to save processing power and avoid noise
+        # 2. Restrict search area to the table to save processing power and avoid noise
         if self._field_mask is not None:
             if self._field_mask.shape != frame.shape[:2]:
                 self._field_mask = cv2.resize(
@@ -59,15 +61,18 @@ class BallDetector:
                     (frame.shape[1], frame.shape[0]),
                     interpolation=cv2.INTER_NEAREST,
                 )
-            roi = cv2.bitwise_and(frame, frame, mask=self._field_mask)
+            roi = cv2.bitwise_and(roi, roi, mask=self._field_mask)
 
-        # 2. Extract foreground (moving objects)
+        # 3. Extract foreground (moving objects)
         fg_mask = self._back_sub.apply(roi)
 
-        # 3. Clean up noise (morphological opening removes small speckles)
-        cleaned = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self._kernel)
+        # 4. Clean up noise
+        # Zuerst CLOSE: Schließt Löcher IM Ball (verhindert "Donut"-Effekt bei schnellen Bällen)
+        cleaned = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self._kernel)
+        # Danach OPEN: Entfernt kleine Störpixel AUßERHALB des Balls
+        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, self._kernel)
 
-        # 4. Find contours of moving objects
+        # 5. Find contours of moving objects
         contours, _ = cv2.findContours(
             cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
@@ -76,7 +81,7 @@ class BallDetector:
         if best_contour is None:
             return None
 
-        # 5. Calculate the center of mass using moments
+        # 6. Calculate the center of mass using moments
         moments = cv2.moments(best_contour)
         if moments["m00"] > 0:
             cx = moments["m10"] / moments["m00"]
